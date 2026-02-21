@@ -1,7 +1,3 @@
-# release.ps1 — публикация новой версии одной командой
-# Использование: .\release.ps1 1.1.0 "Исправлен краш при транскрипции"
-#            или: .\release.ps1          (спросит версию и changelog)
-
 param(
     [string]$Version = "",
     [string]$Changelog = ""
@@ -9,109 +5,92 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# ── Цвета ─────────────────────────────────────────────────────────────────
-function Write-Step($msg)  { Write-Host "`n>>> $msg" -ForegroundColor Cyan }
-function Write-Ok($msg)    { Write-Host "  ✅ $msg" -ForegroundColor Green }
-function Write-Err($msg)   { Write-Host "  ❌ $msg" -ForegroundColor Red; exit 1 }
-function Write-Info($msg)  { Write-Host "  $msg" -ForegroundColor Gray }
+function Write-Step($msg) { Write-Host "`n>>> $msg" -ForegroundColor Cyan }
+function Write-Ok($msg)   { Write-Host "  OK $msg" -ForegroundColor Green }
+function Write-Fail($msg) { Write-Host "  ERROR $msg" -ForegroundColor Red; exit 1 }
 
-Write-Host "`n=============================" -ForegroundColor Yellow
+Write-Host "`n============================" -ForegroundColor Yellow
 Write-Host "  LessonRecorder Release Tool" -ForegroundColor Yellow
-Write-Host "=============================" -ForegroundColor Yellow
+Write-Host "============================" -ForegroundColor Yellow
 
-# ── Читаем текущую версию ─────────────────────────────────────────────────
 Write-Step "Текущая версия"
 $currentVersion = python -c "from version import __version__; print(__version__)"
-Write-Info "Сейчас: v$currentVersion"
+Write-Host "  Сейчас: v$currentVersion" -ForegroundColor Gray
 
-# ── Запрашиваем новую версию ──────────────────────────────────────────────
 if (-not $Version) {
     $Version = Read-Host "`n  Новая версия (например 1.1.0)"
 }
+
 if ($Version -notmatch '^\d+\.\d+\.\d+$') {
-    Write-Err "Неверный формат версии. Используй формат X.Y.Z (например 1.1.0)"
+    Write-Fail "Неверный формат. Используй X.Y.Z например 1.1.0"
 }
+
 if (-not $Changelog) {
-    $Changelog = Read-Host "  Что изменилось (для описания релиза)"
+    $Changelog = Read-Host "  Что изменилось"
 }
 
 $tag = "v$Version"
-Write-Info "Новая версия: $tag"
+Write-Host "  Новая версия: $tag" -ForegroundColor Gray
 
-# ── Проверяем git статус ──────────────────────────────────────────────────
 Write-Step "Проверка git"
-$status = git status --porcelain
-if ($status) {
-    Write-Host "`n  Несохранённые изменения:" -ForegroundColor Yellow
-    Write-Host $status -ForegroundColor Gray
-    $commit = Read-Host "`n  Закоммитить все изменения? (y/n)"
-    if ($commit -eq "y") {
+$gitStatus = git status --porcelain
+if ($gitStatus) {
+    Write-Host "`n  Есть незакоммиченные изменения:" -ForegroundColor Yellow
+    Write-Host $gitStatus -ForegroundColor Gray
+    $answer = Read-Host "`n  Закоммитить все? (y/n)"
+    if ($answer -eq "y") {
         git add -A
-        git commit -m "Release $tag`: $Changelog"
+        git commit -m "Release ${tag}: $Changelog"
         Write-Ok "Изменения закоммичены"
     } else {
-        Write-Err "Закоммить изменения вручную и запусти снова"
+        Write-Fail "Закоммить вручную и запусти снова"
     }
 }
 
-# ── Обновляем version.py ──────────────────────────────────────────────────
 Write-Step "Обновление version.py"
-$versionFile = Get-Content "version.py" -Raw
-$versionFile = $versionFile -replace '__version__ = "[^"]*"', "__version__ = `"$Version`""
-Set-Content "version.py" $versionFile -NoNewline
-Write-Ok "version.py → $Version"
+$content = Get-Content "version.py" -Raw
+$content = $content -replace '__version__ = "[^"]*"', "__version__ = `"$Version`""
+[System.IO.File]::WriteAllText("$PWD\version.py", $content)
+Write-Ok "version.py -> $Version"
 
-# ── Обновляем installer/version_info.txt ─────────────────────────────────
 Write-Step "Обновление version_info.txt"
-$vparts = $Version.Split('.')
-$winVer = "$($vparts[0]), $($vparts[1]), $($vparts[2]), 0"
-$infoFile = Get-Content "installer\version_info.txt" -Raw
-$infoFile = $infoFile -replace 'filevers=\([^)]*\)', "filevers=($winVer)"
-$infoFile = $infoFile -replace 'prodvers=\([^)]*\)', "prodvers=($winVer)"
-$infoFile = $infoFile -replace "StringStruct\(u'FileVersion', u'[^']*'\)", "StringStruct(u'FileVersion', u'$Version.0')"
-$infoFile = $infoFile -replace "StringStruct\(u'ProductVersion', u'[^']*'\)", "StringStruct(u'ProductVersion', u'$Version.0')"
-Set-Content "installer\version_info.txt" $infoFile -NoNewline
-Write-Ok "version_info.txt → $Version"
+$parts = $Version.Split('.')
+$winVer = "$($parts[0]), $($parts[1]), $($parts[2]), 0"
+$info = Get-Content "installer\version_info.txt" -Raw
+$info = $info -replace 'filevers=\([^)]*\)', "filevers=($winVer)"
+$info = $info -replace 'prodvers=\([^)]*\)', "prodvers=($winVer)"
+$info = $info -replace "StringStruct\(u'FileVersion', u'[^']*'\)", "StringStruct(u'FileVersion', u'$Version.0')"
+$info = $info -replace "StringStruct\(u'ProductVersion', u'[^']*'\)", "StringStruct(u'ProductVersion', u'$Version.0')"
+[System.IO.File]::WriteAllText("$PWD\installer\version_info.txt", $info)
+Write-Ok "version_info.txt -> $Version"
 
-# ── Коммитим версию ───────────────────────────────────────────────────────
 Write-Step "Коммит версии"
-git add version.py installer\version_info.txt
+git add version.py "installer\version_info.txt"
 git commit -m "Bump version to $Version"
-Write-Ok "Версия закоммичена"
+Write-Ok "Закоммичено"
 
-# ── Создаём тег ───────────────────────────────────────────────────────────
 Write-Step "Создание тега $tag"
-# Проверяем что тег не существует
-$existingTag = git tag -l $tag
-if ($existingTag) {
-    Write-Err "Тег $tag уже существует! Используй другую версию."
+$existing = git tag -l $tag
+if ($existing) {
+    Write-Fail "Тег $tag уже существует"
 }
-git tag -a $tag -m "$Changelog"
+git tag -a $tag -m $Changelog
 Write-Ok "Тег $tag создан"
 
-# ── Пушим ────────────────────────────────────────────────────────────────
-Write-Step "Публикация на GitHub"
+Write-Step "Пуш на GitHub"
 git push origin main
 git push origin $tag
-Write-Ok "Код и тег запушены"
-
-# ── Готово ────────────────────────────────────────────────────────────────
-Write-Host ""
-Write-Host "╔══════════════════════════════════════════════════════╗" -ForegroundColor Green
-Write-Host "║  ✅ Релиз $tag запущен!                           " -ForegroundColor Green
-Write-Host "╠══════════════════════════════════════════════════════╣" -ForegroundColor Green
-Write-Host "║                                                      " -ForegroundColor Green
-Write-Host "║  GitHub Actions сейчас:                              " -ForegroundColor Green
-Write-Host "║  1. Собирает .exe через PyInstaller                  " -ForegroundColor Green
-Write-Host "║  2. Создаёт установщик через Inno Setup              " -ForegroundColor Green
-Write-Host "║  3. Публикует релиз с .exe файлом                    " -ForegroundColor Green
-Write-Host "║                                                      " -ForegroundColor Green
-Write-Host "║  Следи за прогрессом:                                " -ForegroundColor Green
+Write-Ok "Запушено"
 
 $remote = git remote get-url origin
 $repoUrl = $remote -replace '\.git$', ''
-Write-Host "║  $repoUrl/actions   " -ForegroundColor Green
-Write-Host "║                                                      " -ForegroundColor Green
-Write-Host "║  Готово через ~5-7 минут                             " -ForegroundColor Green
-Write-Host "╚══════════════════════════════════════════════════════╝" -ForegroundColor Green
+
+Write-Host ""
+Write-Host "=====================================================" -ForegroundColor Green
+Write-Host "  ГОТОВО! Релиз $tag запущен" -ForegroundColor Green
+Write-Host "=====================================================" -ForegroundColor Green
+Write-Host "  Следи за сборкой:" -ForegroundColor Green
+Write-Host "  $repoUrl/actions" -ForegroundColor Cyan
+Write-Host "  Установщик будет готов через ~7 минут" -ForegroundColor Green
+Write-Host "=====================================================" -ForegroundColor Green
 Write-Host ""
