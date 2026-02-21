@@ -18,7 +18,7 @@ binaries = []
 binaries += collect_dynamic_libs("sounddevice")
 
 a = Analysis(
-    ["main.py"],
+    ["main.py", "core/transcribe_worker.py"],
     pathex=["."],
     binaries=binaries,
     datas=datas,

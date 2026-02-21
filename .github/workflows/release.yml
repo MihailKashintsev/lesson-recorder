@@ -3,69 +3,57 @@ name: Build & Release
 on:
   push:
     tags:
-      - "v*"          # срабатывает при пуше тегов вида v1.0.0, v1.2.3 и т.д.
-  workflow_dispatch:  # ручной запуск из интерфейса GitHub
+      - "v*"
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: windows-latest
     permissions:
-      contents: write   # нужно для создания релиза
+      contents: write
 
     steps:
-      # ── 1. Получаем код ────────────────────────────────────────────────
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── 2. Python ──────────────────────────────────────────────────────
-      - name: Set up Python
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
 
-      # ── 3. Зависимости ─────────────────────────────────────────────────
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller packaging
 
-      # ── 4. Читаем версию из version.py ────────────────────────────────
       - name: Read version
         id: version
         run: |
           $ver = python -c "from version import __version__; print(__version__)"
           echo "VERSION=$ver" >> $env:GITHUB_OUTPUT
-          echo "Version is $ver"
+          echo "Version: $ver"
 
-      # ── 5. PyInstaller — собираем .exe ─────────────────────────────────
       - name: Build with PyInstaller
         run: |
-          pyinstaller LessonRecorder.spec
+          pyinstaller LessonRecorder.spec --clean --noconfirm
 
-      # ── 6. Inno Setup — собираем installer ────────────────────────────
       - name: Install Inno Setup
-        run: |
-          choco install innosetup --yes --no-progress
+        run: choco install innosetup --yes --no-progress
 
       - name: Build installer
-        run: |
-          iscc installer\setup.iss
-        env:
-          APP_VERSION: ${{ steps.version.outputs.VERSION }}
+        run: iscc installer\setup.iss
 
-      # ── 7. Ищем готовый установщик ─────────────────────────────────────
-      - name: Find installer file
-        id: find_installer
+      - name: Find installer
+        id: installer
         run: |
           $file = Get-ChildItem -Path "dist\installer\*.exe" | Select-Object -First 1
-          echo "INSTALLER_PATH=$($file.FullName)" >> $env:GITHUB_OUTPUT
-          echo "INSTALLER_NAME=$($file.Name)" >> $env:GITHUB_OUTPUT
-          echo "Found installer: $($file.FullName)"
+          echo "PATH=$($file.FullName)" >> $env:GITHUB_OUTPUT
+          echo "NAME=$($file.Name)" >> $env:GITHUB_OUTPUT
+          echo "Found: $($file.FullName)"
 
-      # ── 8. Создаём GitHub Release и загружаем .exe ─────────────────────
-      - name: Create GitHub Release
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
@@ -74,16 +62,15 @@ jobs:
             ## LessonRecorder v${{ steps.version.outputs.VERSION }}
 
             ### Установка
-            Скачайте `${{ steps.find_installer.outputs.INSTALLER_NAME }}` и запустите.
-
-            ### Что нового
-            <!-- Опиши изменения здесь перед созданием тега -->
+            1. Скачайте `${{ steps.installer.outputs.NAME }}`
+            2. Запустите установщик
+            3. Готово — при следующем запуске приложение само предложит обновиться
 
             ### Системные требования
             - Windows 10/11 (64-bit)
-            - 4 GB RAM минимум
-            - [Ollama](https://ollama.com) для составления конспектов
-          files: ${{ steps.find_installer.outputs.INSTALLER_PATH }}
+            - 4 GB RAM
+            - Интернет для AI конспектов (Groq / Gemini / OpenRouter — бесплатно)
+          files: ${{ steps.installer.outputs.PATH }}
           draft: false
           prerelease: false
         env:

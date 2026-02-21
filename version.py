@@ -3,5 +3,5 @@
 __version__ = "1.0.0"
 
 APP_NAME = "LessonRecorder"
-GITHUB_USER = "MihailKashintsev"   # ← замени на своё имя пользователя GitHub
+GITHUB_USER = "YOUR-GITHUB-USERNAME"   # ← замени на своё имя пользователя GitHub
 GITHUB_REPO = "lesson-recorder"

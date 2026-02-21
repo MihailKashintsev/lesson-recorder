@@ -3,8 +3,8 @@
 
 #define MyAppName "LessonRecorder"
 #define MyAppVersion GetFileVersion("dist\LessonRecorder\LessonRecorder.exe")
-#define MyAppPublisher "MihailKashintsev"
-#define MyAppURL "https://github.com/MihailKashintsev/lesson-recorder"
+#define MyAppPublisher "YOUR-GITHUB-USERNAME"
+#define MyAppURL "https://github.com/YOUR-GITHUB-USERNAME/lesson-recorder"
 #define MyAppExeName "LessonRecorder.exe"
 #define MyOutputName "LessonRecorder_" + MyAppVersion + "_setup"
 

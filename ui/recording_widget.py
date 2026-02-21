@@ -235,7 +235,7 @@ class RecordingWidget(QWidget):
         self._transcriber.finished.connect(self._on_transcription_done)
         self._transcriber.error_occurred.connect(self._on_error)
         self._transcriber.start()
-        self.status_label.setText("Транскрибирую речь…")
+        self.status_label.setText("Транскрибирую речь… (первый раз модель грузится ~30сек)")
 
     def _on_transcription_done(self, text: str):
         self._transcript = text
@@ -247,7 +247,11 @@ class RecordingWidget(QWidget):
         from ui.settings_widget import load_settings
         settings = load_settings()
         self._summarizer = Summarizer(
-            text, settings["ollama_model"], settings["ollama_url"]
+            text,
+            provider=settings.get("ai_provider", "groq"),
+            api_key=settings.get("ai_api_key", ""),
+            model=settings.get("ai_model", ""),
+            base_url=settings.get("ai_custom_url", ""),
         )
         self._summarizer.progress.connect(self._on_summary_progress)
         self._summarizer.finished.connect(self._on_summary_done)
