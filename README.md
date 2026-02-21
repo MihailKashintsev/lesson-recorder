@@ -1,109 +1,103 @@
-# 🎙 LessonRecorder
+# LessonRecorder
 
-Приложение для записи уроков/лекций с автоматической транскрипцией и составлением конспектов с помощью локального ИИ.
+> 🎙️ Record lessons → get transcript → generate structured notes. Fully automatic.
 
-## Возможности
-
-- **Запись аудио** — микрофон, системный звук или оба одновременно
-- **Транскрипция** — локально через [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (без интернета)
-- **ИИ-конспект** — автоматическое структурированное конспектирование через [Ollama](https://ollama.com) (без интернета)
-- **История уроков** — все записи хранятся локально, можно просмотреть и экспортировать
-- **Экспорт** — сохранение конспекта в Markdown / TXT
+![Windows](https://img.shields.io/badge/Windows-10%2F11-blue?logo=windows)
+![Python](https://img.shields.io/badge/Python-3.11-blue?logo=python)
+![License](https://img.shields.io/badge/License-MIT-green)
 
 ---
 
-## Установка
+## What it does
 
-### 1. Python и зависимости
-
-```bash
-# Python 3.10+
-pip install -r requirements.txt
-```
-
-> **Примечание для системного звука:** `pyaudiowpatch` работает только на Windows и требует [Microsoft Visual C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/).
->
-> Если установка не удаётся — запись системного звука будет недоступна, но микрофон работает всегда.
-
-### 2. Ollama (локальный ИИ для конспектов)
-
-```bash
-# Скачайте Ollama с https://ollama.com
-# Установите и скачайте модель:
-ollama pull llama3
-# или более лёгкую:
-ollama pull mistral
-# или самую быструю:
-ollama pull llama3.2:3b
-```
-
-Перед запуском приложения запустите Ollama:
-```bash
-ollama serve
-```
-
-### 3. Запуск приложения
-
-```bash
-python main.py
-```
+1. **Records** audio from your microphone and/or system sound (captures online lessons too)
+2. **Transcribes** speech offline using Whisper AI — no internet needed
+3. **Generates** structured markdown notes via free cloud AI (Groq, Gemini, OpenRouter)
+4. **Saves** everything to a local history with search and export
+5. **Auto-updates** — notifies you when a new version is available
 
 ---
 
-## Структура проекта
+## Installation
 
-```
-lesson_recorder/
-├── main.py               # Точка входа
-├── requirements.txt
-├── core/
-│   ├── database.py       # SQLite хранилище уроков
-│   ├── recorder.py       # Захват аудио (mic / system / both)
-│   ├── transcriber.py    # faster-whisper транскрипция
-│   └── summarizer.py     # Ollama конспектирование
-└── ui/
-    ├── main_window.py    # Главное окно с боковой панелью
-    ├── recording_widget.py  # Экран записи
-    ├── history_widget.py    # История уроков
-    └── settings_widget.py   # Настройки
-```
+1. Go to [Releases](../../releases) and download the latest `LessonRecorder_X.X.X_setup.exe`
+2. Run it — no admin rights required
+3. Launch **LessonRecorder** from the Start menu or desktop shortcut
 
 ---
 
-## Настройки
+## First-time setup
 
-| Параметр | По умолчанию | Описание |
+### Transcription (works offline)
+
+Open **Settings → Transcription** and choose a Whisper model:
+
+| Model | Speed | Quality | Use when |
+|-------|-------|---------|----------|
+| `tiny` | ⚡ Very fast | Good | Quick notes, clear audio |
+| `base` | Fast | Better | Default recommendation |
+| `small` | Medium | Great | Important lectures |
+| `medium` | Slow | Excellent | Professional quality |
+
+The model downloads automatically on first use and is cached locally.
+
+### AI Notes (free, requires internet)
+
+Open **Settings → AI Provider** and choose one:
+
+| Provider | Free limit | Sign up |
+|----------|-----------|---------|
+| **Groq** | 14,400 requests/day | [console.groq.com](https://console.groq.com) |
+| **Google Gemini** | 250 requests/day | [aistudio.google.com](https://aistudio.google.com) |
+| **OpenRouter** | 50 req/day (free models) | [openrouter.ai](https://openrouter.ai) |
+| **Custom URL** | Any OpenAI-compatible API | — |
+
+No credit card required for any of them. Paste your key → click **Test connection** → Save.
+
+---
+
+## How to use
+
+1. Open the **Record** tab
+2. Select audio source: Microphone / System audio / Both
+3. Click **Start Recording**
+4. When done, click **Stop** — transcription starts automatically
+5. After transcription, click **Generate Notes** to get an AI summary
+6. Find all sessions in the **History** tab
+
+---
+
+## Auto-updates
+
+When a new version is released, the app shows a notification on startup:
+
+> **"Update available: v1.X.X"**  
+> Download and install?
+
+Click **Download** — the installer runs silently and restarts the app. No manual steps needed.
+
+---
+
+## System requirements
+
+| | Minimum | Recommended |
 |---|---|---|
-| Источник аудио | Оба | mic / system / both |
-| Whisper модель | base | tiny / base / small / medium / large |
-| Язык | Авто | Язык речи для Whisper |
-| Ollama модель | llama3 | Любая модель из `ollama list` |
-| Ollama URL | localhost:11434 | Можно изменить для удалённой Ollama |
-
-### Выбор модели Whisper
-
-| Модель | Скорость | Качество | RAM |
-|---|---|---|---|
-| tiny | ⚡⚡⚡⚡ | ⭐ | ~1 GB |
-| base | ⚡⚡⚡ | ⭐⭐ | ~1 GB |
-| small | ⚡⚡ | ⭐⭐⭐ | ~2 GB |
-| medium | ⚡ | ⭐⭐⭐⭐ | ~5 GB |
-| large-v3 | 🐢 | ⭐⭐⭐⭐⭐ | ~10 GB |
+| OS | Windows 10 64-bit | Windows 11 |
+| RAM | 4 GB | 8 GB |
+| Disk | 2 GB | 4 GB |
+| Internet | Not needed for transcription | Needed for AI notes |
 
 ---
 
-## Хранение данных
+## Tips
 
-Все данные хранятся локально в `~/.lesson_recorder/`:
-- `lessons.db` — база данных уроков (SQLite)
-- `audio/` — аудиофайлы записей
-- `settings.json` — настройки
+- Use **"Both sources"** to capture both your voice and the teacher's audio in online lessons
+- First transcription takes ~30 sec (model loading) — all subsequent ones are instant
+- Single words and short phrases work fine — the silence filter is disabled
+- If Groq is unavailable in your region, switch to Google Gemini — it works everywhere
 
 ---
 
-## Требования
+## License
 
-- Windows 10/11 (для системного звука через WASAPI)
-- Python 3.10+
-- 4+ GB RAM (для модели Whisper base)
-- Ollama установлена и запущена
+MIT — free to use, modify and distribute.
