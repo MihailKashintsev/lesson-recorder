@@ -68,7 +68,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon="installer/icon.ico",   # иконка (создай или удали строку)
+    # icon="installer/icon.ico",  # раскомментируй если добавишь иконку
     version="installer/version_info.txt",
 )
 
