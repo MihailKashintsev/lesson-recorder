@@ -2,9 +2,9 @@
 ; Скачать Inno Setup: https://jrsoftware.org/isdl.php
 
 #define MyAppName "LessonRecorder"
-#define MyAppVersion GetFileVersion("dist\LessonRecorder\LessonRecorder.exe")
-#define MyAppPublisher "MihailKashintsev"
-#define MyAppURL "https://github.com/MihailKashintsev/lesson-recorder"
+#define MyAppVersion GetVersionNumbersString("{#SourcePath}\..\dist\LessonRecorder\LessonRecorder.exe")
+#define MyAppPublisher "YOUR-GITHUB-USERNAME"
+#define MyAppURL "https://github.com/YOUR-GITHUB-USERNAME/lesson-recorder"
 #define MyAppExeName "LessonRecorder.exe"
 #define MyOutputName "LessonRecorder_" + MyAppVersion + "_setup"
 
@@ -23,7 +23,7 @@ DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 ; Иконка установщика
 ;SetupIconFile=icon.ico
-OutputDir=dist\installer
+OutputDir={#SourcePath}\..\dist\installer
 OutputBaseFilename={#MyOutputName}
 Compression=lzma2/ultra64
 SolidCompression=yes
@@ -48,7 +48,7 @@ Name: "startupicon"; Description: "Запускать при старте Window
 
 [Files]
 ; Вся папка dist\LessonRecorder\ (PyInstaller вывод)
-Source: "dist\LessonRecorder\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourcePath}\..\dist\LessonRecorder\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
