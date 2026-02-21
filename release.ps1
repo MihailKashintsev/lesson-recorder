@@ -68,7 +68,7 @@ git tag -a $tag -m $Changelog
 Write-Ok "Tag $tag created"
 
 Write-Step "Pushing to GitHub"
-git push origin main
+git push origin master
 git push origin $tag
 Write-Ok "Pushed"
 
