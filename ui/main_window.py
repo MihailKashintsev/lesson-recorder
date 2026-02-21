@@ -92,6 +92,18 @@ class MainWindow(QMainWindow):
             self._nav_buttons.append(btn)
 
         sb_layout.addStretch()
+
+        # Версия внизу сайдбара
+        try:
+            from version import __version__
+        except ImportError:
+            __version__ = "dev"
+
+        version_label = QLabel(f"v{__version__}")
+        version_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        version_label.setStyleSheet("color: #333; font-size: 10px; margin-bottom: 4px;")
+        sb_layout.addWidget(version_label)
+
         root_layout.addWidget(sidebar)
 
         # ── Content area ──────────────────────────────────────────────────

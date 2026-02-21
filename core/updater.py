@@ -180,11 +180,27 @@ class UpdateDialog(QDialog):
         self._downloader.start()
 
     def _on_downloaded(self, path: str):
-        self.status_label.setText("Запускаю установщик…")
-        # Run installer silently and exit the app
-        subprocess.Popen([path, "/SILENT", "/CLOSEAPPLICATIONS"],
-                         creationflags=subprocess.DETACHED_PROCESS
-                         if sys.platform == "win32" else 0)
+        self.status_label.setText("Закрываю приложение и запускаю установщик…")
+
+        # Создаём .bat который ждёт закрытия нашего процесса, затем запускает
+        # установщик и перезапускает приложение
+        bat_content = (
+            "@echo off\r\n"
+            "timeout /t 2 /nobreak > nul\r\n"
+            f'"{path}" /SILENT /RESTARTAPPLICATIONS\r\n'
+        )
+        bat_path = os.path.join(tempfile.gettempdir(), "lessonrecorder_update.bat")
+        with open(bat_path, "w", encoding="utf-8") as f:
+            f.write(bat_content)
+
+        # Запускаем .bat полностью отдельно — он сработает уже после нашего закрытия
+        subprocess.Popen(
+            ["cmd.exe", "/c", bat_path],
+            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+            close_fds=True,
+        )
+
+        # Закрываем приложение — installer запустится через 2 сек
         QApplication.quit()
 
     def _on_error(self, msg: str):
