@@ -333,8 +333,10 @@ class PhotoOcrDialog(QDialog):
         self._photos: list[str]          = []
         self._ocr_text: str              = ""
         self._ocr_thread: OcrThread | None = None
-        self._tess_ok    = _tesseract_available()
-        self._installed  = _get_installed_langs() if self._tess_ok else []
+        # Сначала ищем языки — они могут быть даже если exe не найден стандартным путём
+        self._installed  = _get_installed_langs()
+        # Если языки найдены — считаем OCR доступным даже если get_tesseract_version() упал
+        self._tess_ok    = _tesseract_available() or bool(self._installed)
         self._build_ui()
 
     def _build_ui(self):
@@ -381,10 +383,15 @@ class PhotoOcrDialog(QDialog):
         sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine); sep.setStyleSheet("color:#2a2a2a;")
         layout.addWidget(sep)
 
-        if not self._tess_ok:
-            w = QLabel("⚠️ Tesseract не найден.\nУстанови: https://github.com/UB-Mannheim/tesseract/wiki\nПри установке выбери нужные языки!")
-            w.setStyleSheet("color:#ffb300;font-size:11px;background:#2a1f00;border-radius:6px;padding:8px 12px;")
-            w.setWordWrap(True); layout.addWidget(w)
+        if not self._tess_ok and not self._installed:
+            # Вообще ничего нет — показываем инструкцию по установке
+            w = QLabel("⚠️ Tesseract не найден.\n"
+                       "Установи: https://github.com/UB-Mannheim/tesseract/wiki\n"
+                       "При установке выбери нужные языки!")
+            w.setStyleSheet("color:#ffb300;font-size:11px;background:#2a1f00;"
+                            "border-radius:6px;padding:8px 12px;")
+            w.setWordWrap(True)
+            layout.addWidget(w)
 
         self._lang_sel = LangSelectorWidget(self._installed, self)
         self._lang_sel.selection_changed.connect(self._upd_btn)
@@ -453,23 +460,37 @@ class PhotoOcrDialog(QDialog):
         self._upd_btn()
 
     def _upd_btn(self):
+        # Разрешаем OCR если: есть фото + выбраны языки + (tesseract найден ИЛИ есть tessdata)
         self.ok_btn.setEnabled(
-            bool(self._photos) and bool(self._lang_sel.get_selected_langs()) and self._tess_ok)
+            bool(self._photos) and bool(self._lang_sel.get_selected_langs()) and
+            (self._tess_ok or bool(self._installed))
+        )
 
     # ── Языки ─────────────────────────────────────────────────────────────
 
     def _refresh_langs(self):
-        """Перечитывает tessdata папки и обновляет список языков."""
-        self._ocr_status.setText("🔄 Ищу языковые пакеты…")
-        self._tess_ok = _tesseract_available()
+        """Перечитывает tessdata папки, ищет tesseract.exe и обновляет UI."""
+        self._ocr_status.setText("🔄 Ищу Tesseract и языковые пакеты…")
         self._installed = _get_installed_langs()
+        # Если языки найдены — OCR работает даже если get_tesseract_version() упал
+        self._tess_ok   = _tesseract_available() or bool(self._installed)
+
         self._lang_sel.reload(self._installed)
         self._upd_btn()
+
+        tl = _get_tl()
+        cmd = tl.find_tesseract_cmd()
+
         if self._installed:
-            self._ocr_status.setText(f"✅ Найдено: {', '.join(self._installed[:6])}"
-                                     + (f" и ещё {len(self._installed)-6}" if len(self._installed)>6 else ""))
+            self._ocr_status.setStyleSheet("color:#4caf50; font-size:12px;")
+            self._ocr_status.setText(
+                f"✅ Найдено языков: {len(self._installed)}"
+                + (f" ({', '.join(self._installed[:5])}{'…' if len(self._installed)>5 else ''})" if self._installed else "")
+                + (f"\nTesseract: {cmd}" if cmd else "")
+            )
         else:
-            self._ocr_status.setText("⚠️ Языки не найдены. Установи Tesseract с языками.")
+            self._ocr_status.setStyleSheet("color:#f44336; font-size:12px;")
+            self._ocr_status.setText("❌ Tesseract не найден. Установи: github.com/UB-Mannheim/tesseract/wiki")
 
     def _install_langs(self):
         tl = _get_tl()
