@@ -15,7 +15,7 @@ DEFAULTS = {
     "audio_source": "both",
     "whisper_model": "tiny",
     "language": "auto",
-    "ai_provider": "groq",
+    "ai_provider": "deepseek",
     "ai_api_key": "",
     "ai_model": "llama-3.3-70b-versatile",
     "ai_custom_url": "",
@@ -125,7 +125,7 @@ class SettingsWidget(QWidget):
         self.combo_provider = QComboBox()
         for pid, pcfg in PROVIDERS.items():
             self.combo_provider.addItem(pcfg["name"], pid)
-        current_provider = self.settings.get("ai_provider", "groq")
+        current_provider = self.settings.get("ai_provider", "deepseek")
         for i in range(self.combo_provider.count()):
             if self.combo_provider.itemData(i) == current_provider:
                 self.combo_provider.setCurrentIndex(i)
