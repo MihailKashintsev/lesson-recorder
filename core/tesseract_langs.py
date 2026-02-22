@@ -41,15 +41,63 @@ DOWNLOADABLE_LANGS = list(LANG_NAMES.keys())
 # ── Поиск Tesseract ───────────────────────────────────────────────────────────
 
 def find_tesseract_cmd() -> str | None:
+    """
+    Ищет tesseract.exe: стандартные пути → PATH → реестр Windows
+    → рядом с найденными tessdata → домашняя папка пользователя.
+    """
+    # 1. Стандартные пути
     for p in [
         r"C:\Program Files\Tesseract-OCR\tesseract.exe",
         r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
         r"C:\Tesseract-OCR\tesseract.exe",
         r"C:\Tesseract\tesseract.exe",
+        r"C:\tools\Tesseract-OCR\tesseract.exe",
+        r"C:\Users\Public\Tesseract-OCR\tesseract.exe",
     ]:
         if Path(p).exists():
             return p
-    return shutil.which("tesseract")
+
+    # 2. PATH
+    found = shutil.which("tesseract")
+    if found:
+        return found
+
+    # 3. Реестр Windows (самый надёжный способ)
+    try:
+        import winreg
+        for hive in [winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER]:
+            for sub in [r"SOFTWARE\Tesseract-OCR", r"SOFTWARE\WOW6432Node\Tesseract-OCR"]:
+                try:
+                    with winreg.OpenKey(hive, sub) as key:
+                        install_dir, _ = winreg.QueryValueEx(key, "InstallDir")
+                        exe = Path(install_dir) / "tesseract.exe"
+                        if exe.exists():
+                            return str(exe)
+                except (FileNotFoundError, OSError):
+                    pass
+    except ImportError:
+        pass
+
+    # 4. Рядом с tessdata папками (tessdata есть — exe на уровень выше)
+    for tessdata_path in [
+        r"C:\Program Files\Tesseract-OCR\tessdata",
+        r"C:\Program Files (x86)\Tesseract-OCR\tessdata",
+        r"C:\Tesseract-OCR\tessdata",
+    ]:
+        td = Path(tessdata_path)
+        if td.exists():
+            exe = td.parent / "tesseract.exe"
+            if exe.exists():
+                return str(exe)
+
+    # 5. Поиск в домашней папке пользователя (последний resort)
+    try:
+        for exe in Path.home().rglob("tesseract.exe"):
+            return str(exe)
+    except (PermissionError, OSError):
+        pass
+
+    return None
 
 
 def get_all_tessdata_dirs() -> list[Path]:
