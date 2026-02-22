@@ -1,6 +1,6 @@
 # Единственное место где хранится версия приложения.
 # GitHub Actions читает этот файл при создании релиза.
-__version__ = "1.1.1"
+__version__ = "1.1.2"
 
 APP_NAME = "LessonRecorder"
 GITHUB_USER = "MihailKashintsev"   # ← замени на своё имя пользователя GitHub
