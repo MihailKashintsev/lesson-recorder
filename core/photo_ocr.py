@@ -4,15 +4,15 @@
 Поддерживает:
   - Выбор файла с диска (JPG, PNG, BMP, TIFF, WebP)
   - Съёмку с веб-камеры (если доступна)
-  - OCR через pytesseract с поддержкой любого количества языков одновременно
-  - Автоопределение установленных языковых пакетов Tesseract
+  - OCR через pytesseract: любое число языков одновременно
+  - Встроенную кнопку скачивания языковых пакетов Tesseract
 
 Установка Tesseract (Windows):
   https://github.com/UB-Mannheim/tesseract/wiki
-  При установке выбрать нужные языковые пакеты.
 """
 import os
 import tempfile
+from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -22,10 +22,10 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QPixmap, QImage
 
-# Стандартный путь установки Tesseract на Windows
+# Путь к tesseract.exe (стандартная установка Windows)
 TESSERACT_CMD = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
-# Человекочитаемые имена языков (код Tesseract → название)
+# Человекочитаемые имена языков
 LANG_NAMES: dict[str, str] = {
     "rus": "Русский",
     "eng": "English",
@@ -44,12 +44,12 @@ LANG_NAMES: dict[str, str] = {
     "ukr": "Українська",
     "bel": "Беларуская",
     "bul": "Български",
-    "srp": "Српски",
     "ces": "Čeština",
     "slk": "Slovenčina",
     "hun": "Magyar",
     "ron": "Română",
     "hrv": "Hrvatski",
+    "srp": "Српски",
     "ara": "العربية",
     "heb": "עברית",
     "jpn": "日本語",
@@ -60,7 +60,6 @@ LANG_NAMES: dict[str, str] = {
     "tha": "ภาษาไทย",
     "vie": "Tiếng Việt",
     "ind": "Bahasa Indonesia",
-    "msa": "Bahasa Melayu",
     "kat": "ქართული",
     "ell": "Ελληνικά",
     "lav": "Latviešu",
@@ -70,12 +69,12 @@ LANG_NAMES: dict[str, str] = {
     "osd": "OSD (авто)",
 }
 
-# Языки по умолчанию (если установлены)
 DEFAULT_LANGS = ["rus", "eng"]
 
 
+# ── Tesseract helpers ─────────────────────────────────────────────────────────
+
 def _setup_tesseract():
-    """Настраивает путь к tesseract.exe."""
     try:
         import pytesseract
         if os.path.exists(TESSERACT_CMD):
@@ -95,29 +94,36 @@ def _tesseract_available() -> bool:
 
 
 def _get_installed_langs() -> list[str]:
-    """Возвращает список установленных языков Tesseract."""
+    """Возвращает список всех доступных языков (системная + пользовательская tessdata)."""
+    # Делегируем в tesseract_langs чтобы не дублировать логику
+    try:
+        from core.tesseract_langs import get_available_langs
+        return get_available_langs()
+    except ImportError:
+        pass
+
+    # Fallback через pytesseract
     try:
         import pytesseract
         _setup_tesseract()
-        langs = pytesseract.get_languages(config="")
-        skip = {"snum"}   # служебные пакеты без языка
-        return [ln for ln in langs if ln not in skip]
+        skip = {"snum"}
+        return [ln for ln in pytesseract.get_languages(config="") if ln not in skip]
     except Exception:
         return []
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ── OCR Thread ────────────────────────────────────────────────────────────────
 
 class OcrThread(QThread):
-    """Фоновый поток распознавания текста на нескольких фото."""
+    """Фоновый поток OCR — поддерживает несколько языков через tessdata модуль."""
     progress = pyqtSignal(int, int, str)
     finished = pyqtSignal(str)
     error    = pyqtSignal(str)
 
-    def __init__(self, image_paths: list[str], lang_string: str):
+    def __init__(self, image_paths: list[str], lang_codes: list[str]):
         super().__init__()
         self.image_paths = image_paths
-        self.lang_string = lang_string or "eng"
+        self.lang_codes  = lang_codes
 
     def run(self):
         try:
@@ -125,17 +131,33 @@ class OcrThread(QThread):
             from PIL import Image
             _setup_tesseract()
 
+            # Готовим tessdata через менеджер языков
+            try:
+                from core.tesseract_langs import prepare_tessdata_for_ocr
+                lang_string, tessdata_dir = prepare_tessdata_for_ocr(self.lang_codes)
+            except ImportError:
+                lang_string = "+".join(self.lang_codes) if self.lang_codes else "eng"
+                tessdata_dir = ""
+
+            if not lang_string:
+                lang_string = "eng"
+
+            # Строим config для pytesseract
+            config = f'--tessdata-dir "{tessdata_dir}"' if tessdata_dir else ""
+
             parts = []
             for i, path in enumerate(self.image_paths, 1):
                 self.progress.emit(
                     i, len(self.image_paths),
-                    f"Фото {i}/{len(self.image_paths)}  [{self.lang_string}]…"
+                    f"Фото {i}/{len(self.image_paths)}  [{lang_string}]…"
                 )
                 img = Image.open(path)
                 try:
-                    text = pytesseract.image_to_string(img, lang=self.lang_string).strip()
+                    text = pytesseract.image_to_string(
+                        img, lang=lang_string, config=config
+                    ).strip()
                 except Exception:
-                    # fallback: пробуем eng
+                    # Fallback без tessdata_dir
                     try:
                         text = pytesseract.image_to_string(img, lang="eng").strip()
                     except Exception:
@@ -155,10 +177,9 @@ class OcrThread(QThread):
             self.error.emit(str(e))
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Camera Dialog ─────────────────────────────────────────────────────────────
 
 class CameraDialog(QDialog):
-    """Диалог съёмки с веб-камеры."""
     photo_taken = pyqtSignal(str)
 
     def __init__(self, parent=None):
@@ -168,8 +189,8 @@ class CameraDialog(QDialog):
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
         self.setStyleSheet("QDialog { background: #1a1a1a; } QLabel { color: #e0e0e0; }")
 
-        self._cap       = None
-        self._timer_id  = None
+        self._cap        = None
+        self._timer_id   = None
         self._last_frame = None
 
         layout = QVBoxLayout(self)
@@ -221,8 +242,7 @@ class CameraDialog(QDialog):
             self._timer_id = self.startTimer(33)
         except ImportError:
             self.view_label.setText(
-                "opencv-python не установлен.\n"
-                "Выполни: pip install opencv-python"
+                "opencv-python не установлен.\nВыполни: pip install opencv-python"
             )
 
     def timerEvent(self, event):
@@ -271,14 +291,15 @@ class CameraDialog(QDialog):
         super().closeEvent(event)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Lang Selector ─────────────────────────────────────────────────────────────
 
 class LangSelectorWidget(QWidget):
     """
     Виджет выбора языков OCR.
-    Динамически отображает только реально установленные языки.
+    Показывает установленные языки + кнопку «Установить языки».
     """
     selection_changed = pyqtSignal()
+    install_requested = pyqtSignal()
 
     def __init__(self, installed_langs: list[str], parent=None):
         super().__init__(parent)
@@ -290,41 +311,56 @@ class LangSelectorWidget(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(6)
 
-        if not installed_langs:
-            lbl = QLabel("Языковые пакеты не найдены.\nУстанови Tesseract с нужными языками.")
-            lbl.setStyleSheet("color: #888; font-size: 12px;")
-            outer.addWidget(lbl)
-            # Пустая строка итога
-            self._summary_lbl = QLabel("")
-            return
-
-        # ── Заголовок + быстрые кнопки ───────────────────────────────────
+        # ── Строка заголовка ─────────────────────────────────────────────
         header_row = QHBoxLayout()
-        lbl = QLabel(f"Языки OCR  ({len(installed_langs)} установлено):")
+
+        lbl = QLabel(
+            f"Языки OCR  ({len(installed_langs)} установлено):"
+            if installed_langs else "Языковые пакеты не установлены:"
+        )
         lbl.setStyleSheet("color: #ccc; font-size: 12px; font-weight: bold;")
         header_row.addWidget(lbl)
         header_row.addStretch()
 
-        for caption, slot in [("Все", self._select_all), ("Снять всё", self._select_none)]:
-            btn = QPushButton(caption)
-            btn.setFixedHeight(22)
-            btn.setStyleSheet(
-                "QPushButton { background:#2a2a2a; color:#aaa; border:1px solid #3a3a3a;"
-                " border-radius:4px; padding:0 8px; font-size:11px; }"
-                "QPushButton:hover { background:#3a3a3a; color:#fff; }"
-            )
-            btn.clicked.connect(slot)
-            header_row.addWidget(btn)
+        if installed_langs:
+            for caption, slot in [("Все", self._select_all), ("Снять всё", self._select_none)]:
+                btn = QPushButton(caption)
+                btn.setFixedHeight(22)
+                btn.setStyleSheet(
+                    "QPushButton { background:#2a2a2a; color:#aaa; border:1px solid #3a3a3a;"
+                    " border-radius:4px; padding:0 8px; font-size:11px; }"
+                    "QPushButton:hover { background:#3a3a3a; color:#fff; }"
+                )
+                btn.clicked.connect(slot)
+                header_row.addWidget(btn)
+
+        # Кнопка "Установить языки" — всегда видна
+        install_btn = QPushButton("🌍 Установить языки…")
+        install_btn.setFixedHeight(22)
+        install_btn.setStyleSheet(
+            "QPushButton { background:#27ae60; color:white; border:none;"
+            " border-radius:4px; padding:0 10px; font-size:11px; }"
+            "QPushButton:hover { background:#2ecc71; }"
+        )
+        install_btn.clicked.connect(self.install_requested.emit)
+        header_row.addWidget(install_btn)
 
         outer.addLayout(header_row)
 
-        # ── Прокручиваемая сетка чекбоксов ──────────────────────────────
+        if not installed_langs:
+            hint = QLabel("Нажми «Установить языки» чтобы скачать языковые пакеты.")
+            hint.setStyleSheet("color: #666; font-size: 11px;")
+            outer.addWidget(hint)
+            self._summary_lbl = QLabel("")
+            return
+
+        # ── Сетка чекбоксов ──────────────────────────────────────────────
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setFixedHeight(130)
+        scroll.setFixedHeight(120)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setStyleSheet(
-            "QScrollArea { background: #111; border: 1px solid #2a2a2a; border-radius: 6px; }"
+            "QScrollArea { background:#111; border:1px solid #2a2a2a; border-radius:6px; }"
         )
 
         grid_w = QWidget()
@@ -339,12 +375,10 @@ class LangSelectorWidget(QWidget):
             name = LANG_NAMES.get(code, code.upper())
             cb = QCheckBox(f"{name}  [{code}]")
             cb.setStyleSheet(
-                "QCheckBox { color: #d0d0d0; font-size: 12px; }"
-                "QCheckBox::indicator { width: 14px; height: 14px; }"
-                "QCheckBox::indicator:unchecked { background:#2a2a2a; border:1px solid #444;"
-                "  border-radius:3px; }"
-                "QCheckBox::indicator:checked  { background:#4a9eff; border:1px solid #4a9eff;"
-                "  border-radius:3px; }"
+                "QCheckBox { color:#d0d0d0; font-size:12px; }"
+                "QCheckBox::indicator { width:14px; height:14px; }"
+                "QCheckBox::indicator:unchecked { background:#2a2a2a; border:1px solid #444; border-radius:3px; }"
+                "QCheckBox::indicator:checked   { background:#4a9eff; border:1px solid #4a9eff; border-radius:3px; }"
             )
             cb.setChecked(code in DEFAULT_LANGS)
             cb.stateChanged.connect(self._on_change)
@@ -354,9 +388,8 @@ class LangSelectorWidget(QWidget):
         scroll.setWidget(grid_w)
         outer.addWidget(scroll)
 
-        # ── Строка итоговой строки языков ────────────────────────────────
         self._summary_lbl = QLabel()
-        self._summary_lbl.setStyleSheet("color: #4a9eff; font-size: 11px;")
+        self._summary_lbl.setStyleSheet("color:#4a9eff; font-size:11px;")
         outer.addWidget(self._summary_lbl)
         self._update_summary()
 
@@ -369,7 +402,7 @@ class LangSelectorWidget(QWidget):
         if langs:
             names = [LANG_NAMES.get(c, c) for c in langs]
             self._summary_lbl.setText(
-                f"Выбрано: {', '.join(names)}  →  строка: {'+'.join(langs)}"
+                f"Выбрано: {', '.join(names)}  →  {'+'.join(langs)}"
             )
         else:
             self._summary_lbl.setText("⚠️ Выбери хотя бы один язык")
@@ -383,17 +416,42 @@ class LangSelectorWidget(QWidget):
             cb.setChecked(False)
 
     def get_selected_langs(self) -> list[str]:
-        return [code for code, cb in self._checkboxes.items() if cb.isChecked()]
+        return [c for c, cb in self._checkboxes.items() if cb.isChecked()]
 
     def get_lang_string(self) -> str:
         langs = self.get_selected_langs()
         return "+".join(langs) if langs else "eng"
 
+    def reload(self, installed_langs: list[str]):
+        """Пересоздаёт виджет после установки новых языков."""
+        # Запоминаем выбранное
+        prev_selected = self.get_selected_langs()
+        # Чистим
+        for i in reversed(range(self.layout().count())):
+            item = self.layout().itemAt(i)
+            if item.widget():
+                item.widget().deleteLater()
+            elif item.layout():
+                _clear_layout(item.layout())
+        # Пересоздаём
+        self._checkboxes.clear()
+        self._build(installed_langs)
+        # Восстанавливаем выбор
+        for code in prev_selected:
+            if code in self._checkboxes:
+                self._checkboxes[code].setChecked(True)
 
-# ─────────────────────────────────────────────────────────────────────────────
+
+def _clear_layout(layout):
+    while layout.count():
+        item = layout.takeAt(0)
+        if item.widget():
+            item.widget().deleteLater()
+
+
+# ── Photo Thumbnail ───────────────────────────────────────────────────────────
 
 class PhotoThumbnail(QWidget):
-    """Миниатюра фото с кнопкой удаления."""
     removed = pyqtSignal(str)
 
     def __init__(self, path: str, parent=None):
@@ -427,21 +485,21 @@ class PhotoThumbnail(QWidget):
         layout.addWidget(remove_btn)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Main Dialog ───────────────────────────────────────────────────────────────
 
 class PhotoOcrDialog(QDialog):
     """
-    Главный диалог:
-    1. Пользователь добавляет фото (с диска или камеры)
-    2. Выбирает языки OCR из автоматически найденных установленных пакетов
-    3. Нажимает «Распознать» — OCR в фоне
-    4. Результат: .get_ocr_text()
+    Диалог добавления фото и OCR.
+
+    1. Добавляем фото (файл или камера)
+    2. Выбираем языки из установленных (+ кнопка доустановки)
+    3. «Распознать» → текст добавляется к конспекту
     """
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Фото → Текст")
-        self.setMinimumSize(660, 600)
+        self.setMinimumSize(660, 610)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
         self.setStyleSheet("""
             QDialog  { background: #1a1a1a; color: #e0e0e0; }
@@ -449,14 +507,13 @@ class PhotoOcrDialog(QDialog):
             QScrollArea { background: transparent; border: none; }
         """)
 
-        self._photos: list[str] = []
-        self._ocr_text: str = ""
+        self._photos: list[str]       = []
+        self._ocr_text: str           = ""
         self._ocr_thread: OcrThread | None = None
+        self._installed_langs: list[str]   = []
 
-        # Загружаем установленные языки синхронно (очень быстро)
-        self._installed_langs: list[str] = (
-            _get_installed_langs() if _tesseract_available() else []
-        )
+        if _tesseract_available():
+            self._installed_langs = _get_installed_langs()
 
         self._build_ui()
 
@@ -465,7 +522,6 @@ class PhotoOcrDialog(QDialog):
         layout.setSpacing(14)
         layout.setContentsMargins(24, 24, 24, 24)
 
-        # ── Заголовок ────────────────────────────────────────────────────
         hdr = QLabel("📷  Добавьте фотографии досок, слайдов или заметок")
         hdr.setStyleSheet("font-size: 15px; font-weight: bold; color: #e0e0e0;")
         layout.addWidget(hdr)
@@ -496,7 +552,7 @@ class PhotoOcrDialog(QDialog):
         photo_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         photo_scroll.setWidgetResizable(True)
         photo_scroll.setStyleSheet(
-            "background: #111; border: 1px solid #2a2a2a; border-radius: 8px;"
+            "background:#111; border:1px solid #2a2a2a; border-radius:8px;"
         )
 
         self._thumb_container = QWidget()
@@ -523,24 +579,23 @@ class PhotoOcrDialog(QDialog):
         sep.setStyleSheet("color: #2a2a2a;")
         layout.addWidget(sep)
 
-        # ── Выбор языков ─────────────────────────────────────────────────
-        self._lang_selector = LangSelectorWidget(self._installed_langs, self)
-        self._lang_selector.selection_changed.connect(self._update_recognize_btn)
-        layout.addWidget(self._lang_selector)
-
-        # Предупреждение если Tesseract не найден
-        if not self._installed_langs:
+        # ── Предупреждение о Tesseract ───────────────────────────────────
+        if not _tesseract_available():
             warn = QLabel(
-                "⚠️ Tesseract не найден или языковые пакеты не установлены.\n"
-                "Скачай: https://github.com/UB-Mannheim/tesseract/wiki  "
-                "(при установке выбери нужные языки)"
+                "⚠️ Tesseract не найден. Установи: https://github.com/UB-Mannheim/tesseract/wiki"
             )
             warn.setStyleSheet(
-                "color: #ffb300; font-size: 11px;"
-                " background: #2a1f00; border-radius: 6px; padding: 6px 10px;"
+                "color:#ffb300; font-size:11px; background:#2a1f00;"
+                " border-radius:6px; padding:6px 10px;"
             )
             warn.setWordWrap(True)
             layout.addWidget(warn)
+
+        # ── Выбор языков ─────────────────────────────────────────────────
+        self._lang_selector = LangSelectorWidget(self._installed_langs, self)
+        self._lang_selector.selection_changed.connect(self._update_recognize_btn)
+        self._lang_selector.install_requested.connect(self._open_lang_installer)
+        layout.addWidget(self._lang_selector)
 
         # ── Статус OCR ───────────────────────────────────────────────────
         self.ocr_status = QLabel("")
@@ -628,25 +683,42 @@ class PhotoOcrDialog(QDialog):
         self._update_recognize_btn()
 
     def _update_recognize_btn(self):
-        has_photos   = len(self._photos) > 0
-        has_langs    = bool(self._lang_selector.get_selected_langs())
-        has_tesseract = bool(self._installed_langs)
+        has_photos    = len(self._photos) > 0
+        has_langs     = bool(self._lang_selector.get_selected_langs())
+        has_tesseract = _tesseract_available()
         self.recognize_btn.setEnabled(has_photos and has_langs and has_tesseract)
+
+    # ── Установка языков ──────────────────────────────────────────────────
+
+    def _open_lang_installer(self):
+        """Открывает диалог скачивания языков, затем обновляет список."""
+        from core.tesseract_langs import LangInstallDialog
+        # Передаём отсутствующие из DEFAULT_LANGS как preselect
+        missing = [c for c in DEFAULT_LANGS if c not in self._installed_langs]
+        dlg = LangInstallDialog(preselect=missing, parent=self)
+        dlg.langs_changed.connect(self._reload_langs)
+        dlg.exec()
+
+    def _reload_langs(self):
+        """Обновляем список языков после установки."""
+        self._installed_langs = _get_installed_langs()
+        self._lang_selector.reload(self._installed_langs)
+        self._update_recognize_btn()
 
     # ── OCR ───────────────────────────────────────────────────────────────
 
     def _start_ocr(self):
-        lang_string = self._lang_selector.get_lang_string()
-        if not lang_string:
+        lang_codes = self._lang_selector.get_selected_langs()
+        if not lang_codes:
             QMessageBox.warning(self, "Нет языков", "Выбери хотя бы один язык OCR.")
             return
 
         self.recognize_btn.setEnabled(False)
         self.add_file_btn.setEnabled(False)
         self.add_camera_btn.setEnabled(False)
-        self.ocr_status.setText(f"⏳ Распознаю [{lang_string}]…")
+        self.ocr_status.setText(f"⏳ Распознаю [{'+'.join(lang_codes)}]…")
 
-        self._ocr_thread = OcrThread(list(self._photos), lang_string)
+        self._ocr_thread = OcrThread(list(self._photos), lang_codes)
         self._ocr_thread.progress.connect(self._on_ocr_progress)
         self._ocr_thread.finished.connect(self._on_ocr_done)
         self._ocr_thread.error.connect(self._on_ocr_error)
@@ -657,11 +729,11 @@ class PhotoOcrDialog(QDialog):
 
     def _on_ocr_done(self, text: str):
         self._ocr_text = text
-        langs = self._lang_selector.get_lang_string()
+        langs = "+".join(self._lang_selector.get_selected_langs())
         if text:
             self.ocr_status.setText(
                 f"✅ Готово · {len(self._photos)} фото · "
-                f"{len(text)} симв. · языки: {langs}"
+                f"{len(text)} симв. · [{langs}]"
             )
         else:
             self.ocr_status.setText("⚠️ Текст не найден на фотографиях")
@@ -672,8 +744,6 @@ class PhotoOcrDialog(QDialog):
         self.recognize_btn.setEnabled(True)
         self.add_file_btn.setEnabled(True)
         self.add_camera_btn.setEnabled(True)
-
-    # ── Результат ─────────────────────────────────────────────────────────
 
     def get_ocr_text(self) -> str:
         return self._ocr_text

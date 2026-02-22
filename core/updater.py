@@ -180,28 +180,55 @@ class UpdateDialog(QDialog):
         self._downloader.start()
 
     def _on_downloaded(self, path: str):
-        self.status_label.setText("Закрываю приложение и запускаю установщик…")
+        self.status_label.setText("Подготовка к установке…")
 
-        # Создаём .bat который ждёт закрытия нашего процесса, затем запускает
-        # установщик через ShellExecute с runas (запрос UAC) и перезапускает приложение.
-        # PowerShell Start-Process -Verb RunAs автоматически запрашивает права администратора.
-        bat_content = (
-            "@echo off\r\n"
-            "timeout /t 2 /nobreak > nul\r\n"
-            f'powershell -WindowStyle Hidden -Command "Start-Process -FilePath \\"{path}\\" -ArgumentList \\"/SILENT /RESTARTAPPLICATIONS\\" -Verb RunAs -Wait"\r\n'
-        )
-        bat_path = os.path.join(tempfile.gettempdir(), "lessonrecorder_update.bat")
-        with open(bat_path, "w", encoding="utf-8") as f:
-            f.write(bat_content)
+        # Путь к текущему exe — чтобы перезапустить после установки
+        exe_path = sys.executable
+        pid = os.getpid()
 
-        # Запускаем .bat полностью отдельно — он сработает уже после нашего закрытия
+        # Экранируем пути для PowerShell (одинарные кавычки)
+        safe_installer = path.replace("'", "''")
+        safe_exe      = exe_path.replace("'", "''")
+
+        # PowerShell скрипт:
+        #  1. Ждёт завершения нашего процесса по PID
+        #  2. Ещё секунду на освобождение файлов
+        #  3. Запускает установщик с UAC и ЖДЁТ его завершения (-Wait)
+        #  4. Перезапускает приложение
+        ps_script = f"""\
+# Ждём завершения текущего процесса
+$pid = {pid}
+while ($null -ne (Get-Process -Id $pid -ErrorAction SilentlyContinue)) {{
+    Start-Sleep -Milliseconds 300
+}}
+Start-Sleep -Seconds 1
+
+# Запускаем установщик с правами администратора (UAC-диалог)
+Start-Process -FilePath '{safe_installer}' `
+              -ArgumentList '/SILENT' `
+              -Verb RunAs `
+              -Wait
+
+# Перезапускаем приложение после установки
+Start-Process -FilePath '{safe_exe}'
+"""
+        ps_path = os.path.join(tempfile.gettempdir(), "lessonrecorder_update.ps1")
+        with open(ps_path, "w", encoding="utf-8") as f:
+            f.write(ps_script)
+
+        # Запускаем PowerShell скрипт полностью отдельно
         subprocess.Popen(
-            ["cmd.exe", "/c", bat_path],
+            [
+                "powershell",
+                "-WindowStyle", "Hidden",
+                "-ExecutionPolicy", "Bypass",
+                "-File", ps_path,
+            ],
             creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
             close_fds=True,
         )
 
-        # Закрываем приложение — installer запустится через 2 сек
+        # Закрываем приложение — PS-скрипт дождётся этого и только тогда установит
         QApplication.quit()
 
     def _on_error(self, msg: str):
