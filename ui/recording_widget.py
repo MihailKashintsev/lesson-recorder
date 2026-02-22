@@ -1,33 +1,32 @@
 import time
 from datetime import datetime
-from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QProgressBar, QTextEdit, QFrame, QInputDialog, QSizePolicy
+    QProgressBar, QTextEdit, QFrame,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QFont, QColor, QPainter, QPen
+from PyQt6.QtGui import QColor, QPainter
 
 from core.recorder import Recorder, get_audio_path
 from core.transcriber import Transcriber
 from core.summarizer import Summarizer
-from core.photo_ocr import PhotoOcrDialog
 import core.database as db
+
+# ВАЖНО: PhotoOcrDialog импортируется ЛЕНИВО внутри метода _open_photo_ocr,
+# чтобы ошибки в photo_ocr/tesseract_langs НЕ ломали запись звука.
 
 
 class LevelMeter(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(14)
-        self._level = 0.0
-        self._peak = 0.0
+        self._level = self._peak = 0.0
         self._peak_timer = 0
 
     def set_level(self, level: float):
-        self._level = min(level * 5, 1.0)  # boost sensitivity
+        self._level = min(level * 5, 1.0)
         if self._level >= self._peak:
-            self._peak = self._level
-            self._peak_timer = 30
+            self._peak = self._level; self._peak_timer = 30
         else:
             self._peak_timer = max(0, self._peak_timer - 1)
             if self._peak_timer == 0:
@@ -39,210 +38,159 @@ class LevelMeter(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
         p.setPen(Qt.PenStyle.NoPen)
-
-        # background
-        p.setBrush(QColor("#1e1e1e"))
-        p.drawRoundedRect(0, 0, w, h, 4, 4)
-
-        # level bar
+        p.setBrush(QColor("#1e1e1e")); p.drawRoundedRect(0, 0, w, h, 4, 4)
         filled = int(w * self._level)
         if filled > 0:
-            green_end = int(w * 0.7)
-            yellow_end = int(w * 0.9)
-            if filled <= green_end:
-                color = QColor("#4caf50")
-            elif filled <= yellow_end:
-                color = QColor("#ffb300")
-            else:
-                color = QColor("#f44336")
-            p.setBrush(color)
-            p.drawRoundedRect(0, 0, filled, h, 4, 4)
-
-        # peak marker
-        peak_x = int(w * self._peak)
-        if peak_x > 2:
-            p.setBrush(QColor("#ffffff"))
-            p.drawRect(peak_x - 2, 0, 2, h)
+            ge, ye = int(w*0.7), int(w*0.9)
+            c = "#4caf50" if filled <= ge else "#ffb300" if filled <= ye else "#f44336"
+            p.setBrush(QColor(c)); p.drawRoundedRect(0, 0, filled, h, 4, 4)
+        pk = int(w * self._peak)
+        if pk > 2:
+            p.setBrush(QColor("#ffffff")); p.drawRect(pk-2, 0, 2, h)
 
 
-STATE_IDLE = "idle"
-STATE_RECORDING = "recording"
-STATE_TRANSCRIBING = "transcribing"
+STATE_IDLE        = "idle"
+STATE_RECORDING   = "recording"
+STATE_TRANSCRIBING= "transcribing"
 STATE_SUMMARIZING = "summarizing"
-STATE_DONE = "done"
+STATE_DONE        = "done"
 
 
 class RecordingWidget(QWidget):
-    lesson_saved = pyqtSignal()  # emit to refresh history
+    lesson_saved = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._state = STATE_IDLE
-        self._start_time = None
-        self._lesson_id = None
-        self._audio_path = None
-        self._recorder = None
-        self._transcriber = None
-        self._summarizer = None
-        self._elapsed = 0
-        self._photo_ocr_text = ""   # текст распознанный с фотографий
+        self._state        = STATE_IDLE
+        self._start_time   = None
+        self._lesson_id    = None
+        self._audio_path   = None
+        self._recorder     = None
+        self._transcriber  = None
+        self._summarizer   = None
+        self._photo_text   = ""   # OCR-текст с фотографий
 
         self._timer = QTimer()
         self._timer.setInterval(100)
         self._timer.timeout.connect(self._tick)
-
         self._build_ui()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
-        layout.setSpacing(24)
-        layout.setContentsMargins(40, 40, 40, 40)
+        layout.setSpacing(24); layout.setContentsMargins(40,40,40,40)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        # Title
-        title = QLabel("Запись урока")
-        title.setStyleSheet("font-size: 22px; font-weight: bold; color: #e0e0e0;")
-        layout.addWidget(title)
+        layout.addWidget(QLabel("Запись урока",
+            styleSheet="font-size:22px;font-weight:bold;color:#e0e0e0;"))
 
-        # ── Record button + timer ─────────────────────────────────────────
-        center = QHBoxLayout()
-        center.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        btn_container = QVBoxLayout()
-        btn_container.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        btn_container.setSpacing(16)
+        center = QHBoxLayout(); center.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        bc = QVBoxLayout(); bc.setAlignment(Qt.AlignmentFlag.AlignCenter); bc.setSpacing(16)
 
         self.record_btn = QPushButton("⏺  Начать запись")
         self.record_btn.setFixedSize(220, 64)
-        self.record_btn.setStyleSheet(self._record_btn_style(False))
-        self.record_btn.clicked.connect(self._toggle_recording)
-        btn_container.addWidget(self.record_btn)
+        self.record_btn.setStyleSheet(self._rec_style(False))
+        self.record_btn.clicked.connect(self._toggle)
+        bc.addWidget(self.record_btn)
 
+        # Кнопка фото — lazy import PhotoOcrDialog
         self.photo_btn = QPushButton("📷  Добавить фото")
         self.photo_btn.setFixedSize(220, 36)
         self.photo_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #2a5298;
-                color: white;
-                border: none;
-                border-radius: 8px;
-                font-size: 13px;
-            }
-            QPushButton:hover { background-color: #3a6fd8; }
-            QPushButton:disabled { background-color: #1a2a4a; color: #555; }
+            QPushButton{background:#2a5298;color:white;border:none;border-radius:8px;font-size:13px;}
+            QPushButton:hover{background:#3a6fd8;}
+            QPushButton:disabled{background:#1a2a4a;color:#555;}
         """)
         self.photo_btn.clicked.connect(self._open_photo_ocr)
-        btn_container.addWidget(self.photo_btn)
+        bc.addWidget(self.photo_btn)
 
-        self.photo_status_label = QLabel("")
-        self.photo_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.photo_status_label.setStyleSheet("color: #4a9eff; font-size: 11px;")
-        btn_container.addWidget(self.photo_status_label)
+        self.photo_lbl = QLabel("")
+        self.photo_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.photo_lbl.setStyleSheet("color:#4a9eff;font-size:11px;")
+        bc.addWidget(self.photo_lbl)
 
         self.timer_label = QLabel("00:00:00")
         self.timer_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.timer_label.setStyleSheet("font-size: 36px; font-family: monospace; color: #c0c0c0;")
-        btn_container.addWidget(self.timer_label)
+        self.timer_label.setStyleSheet("font-size:36px;font-family:monospace;color:#c0c0c0;")
+        bc.addWidget(self.timer_label)
 
-        self.level_meter = LevelMeter()
-        self.level_meter.setFixedWidth(220)
-        btn_container.addWidget(self.level_meter)
+        self.level_meter = LevelMeter(); self.level_meter.setFixedWidth(220)
+        bc.addWidget(self.level_meter)
 
         self.source_label = QLabel("")
         self.source_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.source_label.setStyleSheet("color: #888; font-size: 12px;")
-        btn_container.addWidget(self.source_label)
+        self.source_label.setStyleSheet("color:#888;font-size:12px;")
+        bc.addWidget(self.source_label)
 
-        center.addLayout(btn_container)
-        layout.addLayout(center)
+        center.addLayout(bc); layout.addLayout(center)
 
-        # ── Progress / Status ─────────────────────────────────────────────
         self.status_bar = QProgressBar()
-        self.status_bar.setRange(0, 0)
-        self.status_bar.setVisible(False)
+        self.status_bar.setRange(0, 0); self.status_bar.setVisible(False)
         self.status_bar.setFixedHeight(6)
-        self.status_bar.setStyleSheet("""
-            QProgressBar { border: none; background: #2a2a2a; border-radius: 3px; }
-            QProgressBar::chunk { background: #4a9eff; border-radius: 3px; }
-        """)
+        self.status_bar.setStyleSheet("QProgressBar{border:none;background:#2a2a2a;border-radius:3px;}QProgressBar::chunk{background:#4a9eff;border-radius:3px;}")
         layout.addWidget(self.status_bar)
 
         self.status_label = QLabel("")
-        self.status_label.setStyleSheet("color: #888; font-size: 13px;")
+        self.status_label.setStyleSheet("color:#888;font-size:13px;")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
-        # ── Log / Live transcript ─────────────────────────────────────────
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("color: #2a2a2a;")
+        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine); sep.setStyleSheet("color:#2a2a2a;")
         layout.addWidget(sep)
 
-        log_label = QLabel("Лог / Транскрипция")
-        log_label.setStyleSheet("color: #888; font-size: 12px;")
-        layout.addWidget(log_label)
+        layout.addWidget(QLabel("Лог / Транскрипция", styleSheet="color:#888;font-size:12px;"))
 
         self.log_area = QTextEdit()
         self.log_area.setReadOnly(True)
         self.log_area.setPlaceholderText("Здесь будут появляться распознанные фрагменты…")
         self.log_area.setStyleSheet("""
-            QTextEdit {
-                background: #1a1a1a;
-                color: #b0b0b0;
-                border: 1px solid #2a2a2a;
-                border-radius: 8px;
-                font-size: 13px;
-                padding: 8px;
-            }
+            QTextEdit{background:#1a1a1a;color:#b0b0b0;border:1px solid #2a2a2a;
+                      border-radius:8px;font-size:13px;padding:8px;}
         """)
         self.log_area.setMinimumHeight(180)
         layout.addWidget(self.log_area)
 
-    # ── Controls ──────────────────────────────────────────────────────────
-    def _toggle_recording(self):
+    # ── Управление записью ────────────────────────────────────────────────
+
+    def _toggle(self):
         if self._state == STATE_IDLE:
             self._start_recording()
         elif self._state == STATE_RECORDING:
             self._stop_recording()
 
     def _open_photo_ocr(self):
-        """Открывает диалог добавления фото и запускает OCR."""
+        """Lazy import — НЕ ломает запись если photo_ocr недоступен."""
+        try:
+            from core.photo_ocr import PhotoOcrDialog
+        except Exception as e:
+            self._log(f"⚠️ Модуль фото недоступен: {e}")
+            return
         dlg = PhotoOcrDialog(self)
-        result = dlg.exec()
-        if result == PhotoOcrDialog.DialogCode.Accepted:
+        if dlg.exec() == PhotoOcrDialog.DialogCode.Accepted:
             text = dlg.get_ocr_text()
             if text:
-                self._photo_ocr_text = (
-                    (self._photo_ocr_text + "\n\n" + text)
-                    if self._photo_ocr_text else text
-                )
-                lines = self._photo_ocr_text.count("\n") + 1
-                photo_count = self._photo_ocr_text.count("[Фото ")
-                self.photo_status_label.setText(
-                    f"📷 {photo_count} фото · {len(self._photo_ocr_text)} симв. — будут добавлены к конспекту"
-                )
-                self._log(f"\n📷 Добавлен текст с {photo_count} фото ({len(self._photo_ocr_text)} симв.)")
+                self._photo_text = ((self._photo_text + "\n\n" + text)
+                                    if self._photo_text else text)
+                cnt = self._photo_text.count("[Фото ")
+                self.photo_lbl.setText(
+                    f"📷 {cnt} фото · {len(self._photo_text)} симв. — будут в конспекте")
+                self._log(f"\n📷 Добавлен текст с {cnt} фото ({len(self._photo_text)} симв.)")
             else:
-                self.photo_status_label.setText("📷 Фото добавлены, но текст не распознан")
-        # Если пропустили — ничего не делаем, просто закрыли диалог
+                self.photo_lbl.setText("📷 Текст не распознан")
 
     def _start_recording(self):
         from ui.settings_widget import load_settings
         settings = load_settings()
 
-        # Create lesson in DB
         now = datetime.now().strftime("%d.%m.%Y %H:%M")
         self._lesson_id = db.create_lesson(f"Урок {now}", "")
         audio_path = str(get_audio_path(self._lesson_id))
         self._audio_path = audio_path
         db.update_lesson(self._lesson_id, audio_path=audio_path)
 
-        # Source label
-        src_names = {"mic": "🎙 Микрофон", "system": "🖥 Системный звук",
-                     "both": "🎙+🖥 Микрофон + Системный звук"}
-        self.source_label.setText(src_names.get(settings["audio_source"], ""))
+        src = {"mic": "🎙 Микрофон", "system": "🖥 Системный звук",
+               "both": "🎙+🖥 Микрофон + Системный звук"}
+        self.source_label.setText(src.get(settings["audio_source"], ""))
 
-        # Start recorder
         self._recorder = Recorder(settings["audio_source"], audio_path)
         self._recorder.level_updated.connect(self.level_meter.set_level)
         self._recorder.error_occurred.connect(self._on_error)
@@ -253,13 +201,9 @@ class RecordingWidget(QWidget):
         self._start_time = time.time()
         self._timer.start()
         self.log_area.clear()
-        self.photo_status_label.setText(
-            f"📷 {self._photo_ocr_text.count('[Фото ')} фото добавлено"
-            if self._photo_ocr_text else ""
-        )
         self.photo_btn.setEnabled(False)
         self.record_btn.setText("⏹  Остановить")
-        self.record_btn.setStyleSheet(self._record_btn_style(True))
+        self.record_btn.setStyleSheet(self._rec_style(True))
         self._log("Запись начата…")
 
     def _stop_recording(self):
@@ -278,8 +222,7 @@ class RecordingWidget(QWidget):
         from ui.settings_widget import load_settings
         settings = load_settings()
         self._transcriber = Transcriber(
-            path, settings["whisper_model"], settings.get("language", "auto")
-        )
+            path, settings["whisper_model"], settings.get("language", "auto"))
         self._transcriber.progress.connect(self._log)
         self._transcriber.finished.connect(self._on_transcription_done)
         self._transcriber.error_occurred.connect(self._on_error)
@@ -293,20 +236,15 @@ class RecordingWidget(QWidget):
         self._state = STATE_SUMMARIZING
         self.status_label.setText("Составляю конспект…")
 
-        # Объединяем транскрипцию речи с текстом с фотографий
-        combined_text = text
-        if self._photo_ocr_text:
-            combined_text = (
-                f"{text}\n\n"
-                f"--- Текст с фотографий (доски, слайды, заметки) ---\n"
-                f"{self._photo_ocr_text}"
-            )
-            self._log(f"📷 Текст с фото добавлен к транскрипции для конспекта")
+        combined = text
+        if self._photo_text:
+            combined = (f"{text}\n\n--- Текст с фотографий ---\n{self._photo_text}")
+            self._log("📷 Текст с фото добавлен к транскрипции")
 
         from ui.settings_widget import load_settings
         settings = load_settings()
         self._summarizer = Summarizer(
-            combined_text,
+            combined,
             provider=settings.get("ai_provider", "deepseek"),
             api_key=settings.get("ai_api_key", ""),
             model=settings.get("ai_model", ""),
@@ -328,13 +266,11 @@ class RecordingWidget(QWidget):
         self._log("\n✅ Конспект составлен и сохранён!")
         self.record_btn.setEnabled(True)
         self.record_btn.setText("⏺  Начать запись")
-        self.record_btn.setStyleSheet(self._record_btn_style(False))
+        self.record_btn.setStyleSheet(self._rec_style(False))
         self.photo_btn.setEnabled(True)
         self._state = STATE_IDLE
         self.source_label.setText("")
-        # Сбрасываем фото для следующего урока
-        self._photo_ocr_text = ""
-        self.photo_status_label.setText("")
+        self._photo_text = ""; self.photo_lbl.setText("")
         self.lesson_saved.emit()
 
     def _on_error(self, msg: str):
@@ -343,42 +279,21 @@ class RecordingWidget(QWidget):
         self.status_bar.setVisible(False)
         self.record_btn.setEnabled(True)
         self.record_btn.setText("⏺  Начать запись")
-        self.record_btn.setStyleSheet(self._record_btn_style(False))
+        self.record_btn.setStyleSheet(self._rec_style(False))
         self.photo_btn.setEnabled(True)
         self._state = STATE_IDLE
 
     def _tick(self):
-        elapsed = int(time.time() - self._start_time)
-        h = elapsed // 3600
-        m = (elapsed % 3600) // 60
-        s = elapsed % 60
-        self.timer_label.setText(f"{h:02d}:{m:02d}:{s:02d}")
+        e = int(time.time() - self._start_time)
+        self.timer_label.setText(f"{e//3600:02d}:{(e%3600)//60:02d}:{e%60:02d}")
 
     def _log(self, msg: str):
         self.log_area.append(msg)
 
     @staticmethod
-    def _record_btn_style(active: bool) -> str:
-        if active:
-            return """
-                QPushButton {
-                    background-color: #c0392b;
-                    color: white;
-                    border: none;
-                    border-radius: 32px;
-                    font-size: 15px;
-                    font-weight: bold;
-                }
-                QPushButton:hover { background-color: #e74c3c; }
-            """
-        return """
-            QPushButton {
-                background-color: #27ae60;
-                color: white;
-                border: none;
-                border-radius: 32px;
-                font-size: 15px;
-                font-weight: bold;
-            }
-            QPushButton:hover { background-color: #2ecc71; }
-        """
+    def _rec_style(active: bool) -> str:
+        bg = "#c0392b" if active else "#27ae60"
+        hv = "#e74c3c" if active else "#2ecc71"
+        return (f"QPushButton{{background:{bg};color:white;border:none;"
+                f"border-radius:32px;font-size:15px;font-weight:bold;}}"
+                f"QPushButton:hover{{background:{hv};}}")
