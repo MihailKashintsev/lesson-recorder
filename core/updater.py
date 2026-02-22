@@ -11,7 +11,7 @@ from packaging.version import Version
 
 import requests
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QProgressBar, QApplication
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont
 
 from version import __version__, APP_NAME, GITHUB_USER, GITHUB_REPO
@@ -180,56 +180,58 @@ class UpdateDialog(QDialog):
         self._downloader.start()
 
     def _on_downloaded(self, path: str):
-        self.status_label.setText("Подготовка к установке…")
-
-        # Путь к текущему exe — чтобы перезапустить после установки
+        """
+        Вызывается когда установщик скачан.
+        Запускаем PowerShell-скрипт ОТДЕЛЬНЫМ процессом, потом
+        закрываем приложение через QTimer — это важно, иначе UI зависает.
+        """
         exe_path = sys.executable
         pid = os.getpid()
 
-        # Экранируем пути для PowerShell (одинарные кавычки)
         safe_installer = path.replace("'", "''")
-        safe_exe      = exe_path.replace("'", "''")
+        safe_exe       = exe_path.replace("'", "''")
 
-        # PowerShell скрипт:
-        #  1. Ждёт завершения нашего процесса по PID
-        #  2. Ещё секунду на освобождение файлов
-        #  3. Запускает установщик с UAC и ЖДЁТ его завершения (-Wait)
-        #  4. Перезапускает приложение
-        ps_script = f"""\
-# Ждём завершения текущего процесса
-$pid = {pid}
-while ($null -ne (Get-Process -Id $pid -ErrorAction SilentlyContinue)) {{
-    Start-Sleep -Milliseconds 300
-}}
-Start-Sleep -Seconds 1
-
-# Запускаем установщик с правами администратора (UAC-диалог)
-Start-Process -FilePath '{safe_installer}' `
-              -ArgumentList '/SILENT' `
-              -Verb RunAs `
-              -Wait
-
-# Перезапускаем приложение после установки
-Start-Process -FilePath '{safe_exe}'
-"""
+        # PowerShell-скрипт ждёт нашего PID, затем ставит обновление и перезапускает
+        ps_script = (
+            f"$pid = {pid}\n"
+            f"while ($null -ne (Get-Process -Id $pid -ErrorAction SilentlyContinue)) {{\n"
+            f"    Start-Sleep -Milliseconds 300\n"
+            f"}}\n"
+            f"Start-Sleep -Seconds 1\n"
+            f"Start-Process -FilePath '{safe_installer}' -ArgumentList '/SILENT' -Verb RunAs -Wait\n"
+            f"Start-Process -FilePath '{safe_exe}'\n"
+        )
         ps_path = os.path.join(tempfile.gettempdir(), "lessonrecorder_update.ps1")
         with open(ps_path, "w", encoding="utf-8") as f:
             f.write(ps_script)
 
-        # Запускаем PowerShell скрипт полностью отдельно
+        # Запускаем PowerShell — без close_fds (он блокирует UI на Windows!)
         subprocess.Popen(
-            [
-                "powershell",
-                "-WindowStyle", "Hidden",
-                "-ExecutionPolicy", "Bypass",
-                "-File", ps_path,
-            ],
+            ["powershell", "-WindowStyle", "Hidden",
+             "-ExecutionPolicy", "Bypass", "-File", ps_path],
             creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-            close_fds=True,
         )
 
-        # Закрываем приложение — PS-скрипт дождётся этого и только тогда установит
-        QApplication.quit()
+        # Отсчёт 3 → 0, затем quit через QTimer — НЕ блокируем главный поток
+        self.skip_btn.setEnabled(False)
+        self._countdown = 3
+        self._countdown_timer = QTimer(self)
+        self._countdown_timer.setInterval(1000)
+        self._countdown_timer.timeout.connect(self._tick_countdown)
+        self._countdown_timer.start()
+        self._tick_countdown()   # показываем "3" сразу
+
+    def _tick_countdown(self):
+        if self._countdown > 0:
+            self.status_label.setText(
+                f"✅ Скачано! Приложение закроется через {self._countdown}… "
+                f"(установщик запустится автоматически)"
+            )
+            self.status_label.setStyleSheet("color: #4caf50; font-size: 12px;")
+            self._countdown -= 1
+        else:
+            self._countdown_timer.stop()
+            QApplication.quit()
 
     def _on_error(self, msg: str):
         self.status_label.setText(f"Ошибка: {msg}")
