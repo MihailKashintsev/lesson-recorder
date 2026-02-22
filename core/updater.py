@@ -183,11 +183,12 @@ class UpdateDialog(QDialog):
         self.status_label.setText("Закрываю приложение и запускаю установщик…")
 
         # Создаём .bat который ждёт закрытия нашего процесса, затем запускает
-        # установщик и перезапускает приложение
+        # установщик через ShellExecute с runas (запрос UAC) и перезапускает приложение.
+        # PowerShell Start-Process -Verb RunAs автоматически запрашивает права администратора.
         bat_content = (
             "@echo off\r\n"
             "timeout /t 2 /nobreak > nul\r\n"
-            f'"{path}" /SILENT /RESTARTAPPLICATIONS\r\n'
+            f'powershell -WindowStyle Hidden -Command "Start-Process -FilePath \\"{path}\\" -ArgumentList \\"/SILENT /RESTARTAPPLICATIONS\\" -Verb RunAs -Wait"\r\n'
         )
         bat_path = os.path.join(tempfile.gettempdir(), "lessonrecorder_update.bat")
         with open(bat_path, "w", encoding="utf-8") as f:
