@@ -15,11 +15,9 @@ DEFAULTS = {
     "audio_source": "both",
     "whisper_model": "tiny",
     "language": "auto",
-    "ai_provider": "deepseek",
-    "ai_keys": {},           # {"deepseek": "sk-...", "groq": "gsk-...", ...}
-    "ai_models": {},         # {"deepseek": "deepseek-chat", ...}
-    "ai_api_key": "",        # legacy — для совместимости с summarizer
-    "ai_model": "",          # legacy
+    "ai_provider": "groq",
+    "ai_api_key": "",
+    "ai_model": "llama-3.3-70b-versatile",
     "ai_custom_url": "",
     "ai_custom_model": "",
 }
@@ -29,16 +27,7 @@ def load_settings() -> dict:
     if SETTINGS_PATH.exists():
         try:
             with open(SETTINGS_PATH) as f:
-                data = json.load(f)
-            result = {**DEFAULTS, **data}
-            # Миграция: перенести старый единый ключ в новую структуру
-            if result.get("ai_api_key") and not result["ai_keys"]:
-                old_provider = result.get("ai_provider", "groq")
-                result["ai_keys"][old_provider] = result["ai_api_key"]
-            if result.get("ai_model") and not result["ai_models"]:
-                old_provider = result.get("ai_provider", "groq")
-                result["ai_models"][old_provider] = result["ai_model"]
-            return result
+                return {**DEFAULTS, **json.load(f)}
         except Exception:
             pass
     return dict(DEFAULTS)
@@ -57,6 +46,7 @@ class SettingsWidget(QWidget):
         self._build_ui()
 
     def _build_ui(self):
+        # Scroll area для маленьких экранов
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -77,7 +67,7 @@ class SettingsWidget(QWidget):
         title.setStyleSheet("font-size: 22px; font-weight: bold; color: #e0e0e0;")
         layout.addWidget(title)
 
-        # Audio
+        # ── Аудио ─────────────────────────────────────────────────────────
         audio_group = QGroupBox("Запись аудио")
         audio_group.setStyleSheet(self._group_style())
         audio_form = QFormLayout(audio_group)
@@ -90,17 +80,17 @@ class SettingsWidget(QWidget):
         audio_form.addRow("Источник:", self.combo_source)
         layout.addWidget(audio_group)
 
-        # Whisper
+        # ── Whisper ───────────────────────────────────────────────────────
         whisper_group = QGroupBox("Транскрипция (Whisper — работает офлайн)")
         whisper_group.setStyleSheet(self._group_style())
         whisper_form = QFormLayout(whisper_group)
         whisper_form.setSpacing(10)
 
         self.combo_whisper_model = QComboBox()
-        wmodels = ["tiny", "base", "small", "medium", "large-v2", "large-v3"]
-        self.combo_whisper_model.addItems(wmodels)
-        if self.settings["whisper_model"] in wmodels:
-            self.combo_whisper_model.setCurrentIndex(wmodels.index(self.settings["whisper_model"]))
+        models = ["tiny", "base", "small", "medium", "large-v2", "large-v3"]
+        self.combo_whisper_model.addItems(models)
+        if self.settings["whisper_model"] in models:
+            self.combo_whisper_model.setCurrentIndex(models.index(self.settings["whisper_model"]))
         whisper_form.addRow("Модель:", self.combo_whisper_model)
 
         self.combo_lang = QComboBox()
@@ -120,12 +110,13 @@ class SettingsWidget(QWidget):
         whisper_form.addRow("", note)
         layout.addWidget(whisper_group)
 
-        # AI provider
+        # ── ИИ провайдер ──────────────────────────────────────────────────
         ai_group = QGroupBox("ИИ для конспектов")
         ai_group.setStyleSheet(self._group_style())
         ai_layout = QVBoxLayout(ai_group)
         ai_layout.setSpacing(14)
 
+        # Выбор провайдера
         provider_row = QHBoxLayout()
         provider_label = QLabel("Провайдер:")
         provider_label.setFixedWidth(110)
@@ -134,7 +125,7 @@ class SettingsWidget(QWidget):
         self.combo_provider = QComboBox()
         for pid, pcfg in PROVIDERS.items():
             self.combo_provider.addItem(pcfg["name"], pid)
-        current_provider = self.settings.get("ai_provider", "deepseek")
+        current_provider = self.settings.get("ai_provider", "groq")
         for i in range(self.combo_provider.count()):
             if self.combo_provider.itemData(i) == current_provider:
                 self.combo_provider.setCurrentIndex(i)
@@ -145,6 +136,7 @@ class SettingsWidget(QWidget):
         provider_row.addWidget(self.combo_provider)
         ai_layout.addLayout(provider_row)
 
+        # Инфо о провайдере
         self.provider_info = QLabel("")
         self.provider_info.setStyleSheet(
             "color: #4caf50; font-size: 11px; padding: 4px 8px; "
@@ -153,13 +145,13 @@ class SettingsWidget(QWidget):
         self.provider_info.setWordWrap(True)
         ai_layout.addWidget(self.provider_info)
 
-        # API key (per-provider)
+        # API ключ
         key_row = QHBoxLayout()
         key_label = QLabel("API ключ:")
         key_label.setFixedWidth(110)
         key_label.setStyleSheet("color: #c0c0c0;")
 
-        self.edit_api_key = QLineEdit()
+        self.edit_api_key = QLineEdit(self.settings.get("ai_api_key", ""))
         self.edit_api_key.setEchoMode(QLineEdit.EchoMode.Password)
 
         self.toggle_key_btn = QPushButton("👁")
@@ -177,11 +169,7 @@ class SettingsWidget(QWidget):
         key_row.addWidget(self.toggle_key_btn)
         ai_layout.addLayout(key_row)
 
-        self.key_hint_label = QLabel("Ключ сохраняется отдельно для каждого провайдера")
-        self.key_hint_label.setStyleSheet("color: #555; font-size: 10px; padding-left: 114px;")
-        ai_layout.addWidget(self.key_hint_label)
-
-        # Model
+        # Модель
         model_row = QHBoxLayout()
         model_label = QLabel("Модель:")
         model_label.setFixedWidth(110)
@@ -197,7 +185,7 @@ class SettingsWidget(QWidget):
         model_row.addWidget(self.edit_custom_model)
         ai_layout.addLayout(model_row)
 
-        # Custom URL
+        # Кастомный URL (только для custom провайдера)
         url_row = QHBoxLayout()
         self.url_label = QLabel("URL API:")
         self.url_label.setFixedWidth(110)
@@ -208,6 +196,7 @@ class SettingsWidget(QWidget):
         url_row.addWidget(self.edit_custom_url)
         ai_layout.addLayout(url_row)
 
+        # Кнопки: проверить + ссылка регистрации
         btn_row = QHBoxLayout()
         self.test_btn = QPushButton("🔌 Проверить соединение")
         self.test_btn.setStyleSheet(self._btn_style())
@@ -224,6 +213,7 @@ class SettingsWidget(QWidget):
 
         layout.addWidget(ai_group)
 
+        # ── Сохранить ─────────────────────────────────────────────────────
         save_btn = QPushButton("💾  Сохранить настройки")
         save_btn.clicked.connect(self._save)
         save_btn.setStyleSheet("""
@@ -237,6 +227,7 @@ class SettingsWidget(QWidget):
         layout.addWidget(save_btn, alignment=Qt.AlignmentFlag.AlignLeft)
         layout.addStretch()
 
+        # Инициализируем под текущий провайдер
         self._on_provider_changed()
 
     # ── Провайдер изменился ───────────────────────────────────────────────
@@ -244,13 +235,24 @@ class SettingsWidget(QWidget):
         provider_id = self.combo_provider.currentData()
         cfg = get_provider_config(provider_id)
 
+        # Инфо
         self.provider_info.setText(cfg["free_info"])
 
-        # Загружаем ключ для этого провайдера
-        saved_keys = self.settings.get("ai_keys", {})
-        self.edit_api_key.setText(saved_keys.get(provider_id, ""))
+        # Placeholder и лейбл для ключа
+        is_gigachat = (provider_id == "gigachat")
+        key_label_text = "Авторизация:" if is_gigachat else "API ключ:"
+        # Находим лейбл ключа в layout (он в key_row)
         self.edit_api_key.setPlaceholderText(cfg["key_hint"])
+        # Показываем подсказку специфичную для GigaChat
+        if is_gigachat:
+            self.provider_info.setText(
+                cfg["free_info"] + "\n"
+                "Ключ: developers.sber.ru/studio → создай проект → скопируй «Авторизационные данные»"
+            )
+        else:
+            self.provider_info.setText(cfg["free_info"])
 
+        # Модели
         is_custom = provider_id == "custom"
         self.combo_ai_model.setVisible(not is_custom)
         self.edit_custom_model.setVisible(is_custom)
@@ -262,9 +264,8 @@ class SettingsWidget(QWidget):
             self.combo_ai_model.clear()
             for m in cfg["models"]:
                 self.combo_ai_model.addItem(m, m)
-            # Загружаем сохранённую модель для этого провайдера
-            saved_models = self.settings.get("ai_models", {})
-            saved_model = saved_models.get(provider_id, cfg["default_model"])
+            # Восстанавливаем сохранённую модель если подходит
+            saved_model = self.settings.get("ai_model", cfg["default_model"])
             for i in range(self.combo_ai_model.count()):
                 if self.combo_ai_model.itemData(i) == saved_model:
                     self.combo_ai_model.setCurrentIndex(i)
@@ -299,18 +300,44 @@ class SettingsWidget(QWidget):
         if not model:
             QMessageBox.warning(self, "Нет модели", "Укажи модель.")
             return
-        if not key and provider_id != "custom":
-            QMessageBox.warning(self, "Нет ключа",
-                f"Введи API ключ для «{self.combo_provider.currentText()}».")
-            return
 
         headers = {"Content-Type": "application/json"}
-        if key:
+
+        # GigaChat: OAuth токен
+        if provider_id == "gigachat":
+            if not key:
+                QMessageBox.warning(self, "Нет ключа",
+                    "Укажи авторизационные данные GigaChat.")
+                return
+            try:
+                import uuid
+                auth_resp = req.post(
+                    "https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
+                    headers={
+                        "Authorization": f"Basic {key}",
+                        "RqUID": str(uuid.uuid4()),
+                        "Content-Type": "application/x-www-form-urlencoded",
+                    },
+                    data={"scope": "GIGACHAT_API_PERS"},
+                    verify=False,
+                    timeout=10,
+                )
+                auth_resp.raise_for_status()
+                token = auth_resp.json()["access_token"]
+                headers["Authorization"] = f"Bearer {token}"
+            except Exception as e:
+                QMessageBox.critical(self, "❌ Ошибка авторизации GigaChat",
+                    f"Не удалось получить токен:\n{e}\n\n"
+                    "Проверь авторизационные данные на developers.sber.ru/studio")
+                return
+        elif key:
             headers["Authorization"] = f"Bearer {key}"
+
         if provider_id == "openrouter":
             headers["HTTP-Referer"] = "https://github.com/lesson-recorder"
             headers["X-Title"] = "LessonRecorder"
 
+        verify_ssl = (provider_id != "gigachat")
         try:
             r = req.post(
                 f"{base_url}/chat/completions",
@@ -321,46 +348,23 @@ class SettingsWidget(QWidget):
                     "max_tokens": 5,
                 },
                 timeout=15,
+                verify=verify_ssl,
             )
             if r.status_code == 200:
                 QMessageBox.information(self, "✅ Успех",
                     f"Соединение с «{self.combo_provider.currentText()}» работает!\n"
                     f"Модель: {model}")
             elif r.status_code == 401:
-                QMessageBox.critical(self, "❌ Неверный ключ",
-                    "API ключ не принят.\n"
-                    "Проверь, что скопировал ключ полностью и без пробелов.")
-            elif r.status_code == 402:
-                cfg = get_provider_config(provider_id)
-                signup = cfg.get("signup_url", "")
-                hint = f"\n\nПополни баланс: https://{signup}" if signup else ""
-                QMessageBox.warning(self, "⚠️ Нужен баланс",
-                    f"Провайдер вернул код 402 — недостаточно средств на счёте.\n\n"
-                    f"Бесплатный лимит API исчерпан или требуется пополнение.{hint}")
-            elif r.status_code == 403:
-                QMessageBox.warning(self, "⚠️ Доступ запрещён",
-                    "Код 403 — доступ запрещён.\n"
-                    "Возможно, ключ заблокирован или нет доступа к этой модели.")
+                QMessageBox.critical(self, "❌ Ошибка", "Неверный API ключ.")
             elif r.status_code == 404:
                 QMessageBox.warning(self, "⚠️ Модель не найдена",
-                    f"Модель «{model}» не найдена.\nПроверь название модели.")
-            elif r.status_code == 429:
-                QMessageBox.warning(self, "⚠️ Лимит запросов",
-                    "Превышен лимит запросов.\nПодожди немного или смени провайдера.")
+                    f"Модель «{model}» не найдена.\nПроверь название.")
             else:
-                try:
-                    detail = r.json()
-                    msg = detail.get("error", {}).get("message", r.text[:400])
-                except Exception:
-                    msg = r.text[:400]
-                QMessageBox.warning(self, f"⚠️ Ошибка {r.status_code}", msg)
-
+                QMessageBox.warning(self, "⚠️ Ошибка",
+                    f"Код {r.status_code}:\n{r.text[:300]}")
         except req.exceptions.ConnectionError:
             QMessageBox.critical(self, "❌ Нет соединения",
-                f"Не удалось подключиться к:\n{base_url}\n\nПроверь интернет.")
-        except req.exceptions.Timeout:
-            QMessageBox.critical(self, "❌ Таймаут",
-                "Сервер не ответил за 15 секунд.\nПопробуй позже.")
+                f"Не удалось подключиться к:\n{base_url}")
         except Exception as e:
             QMessageBox.critical(self, "❌ Ошибка", str(e))
 
@@ -375,23 +379,12 @@ class SettingsWidget(QWidget):
     def _save(self):
         provider_id = self.combo_provider.currentData()
         src_keys = ["mic", "system", "both"]
-
-        # Сохраняем ключ и модель для текущего провайдера в словари
-        ai_keys = dict(self.settings.get("ai_keys", {}))
-        ai_keys[provider_id] = self.edit_api_key.text().strip()
-
-        ai_models = dict(self.settings.get("ai_models", {}))
-        ai_models[provider_id] = self._get_current_model()
-
         self.settings.update({
             "audio_source": src_keys[self.combo_source.currentIndex()],
             "whisper_model": self.combo_whisper_model.currentText(),
             "language": self.combo_lang.currentData(),
             "ai_provider": provider_id,
-            "ai_keys": ai_keys,
-            "ai_models": ai_models,
-            # Legacy-поля — синхронизируем для summarizer
-            "ai_api_key": ai_keys.get(provider_id, ""),
+            "ai_api_key": self.edit_api_key.text().strip(),
             "ai_model": self._get_current_model(),
             "ai_custom_url": self.edit_custom_url.text().strip(),
             "ai_custom_model": self.edit_custom_model.text().strip(),

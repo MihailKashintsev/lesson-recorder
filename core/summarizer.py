@@ -1,8 +1,10 @@
 """
 Составляет конспект через любой OpenAI-совместимый API.
-Поддерживаемые провайдеры: DeepSeek, Groq, Google Gemini, OpenRouter, Custom.
+Поддерживаемые провайдеры: DeepSeek, GigaChat, Groq, Google Gemini, OpenRouter, Custom.
 """
 import json
+import uuid
+import base64
 import requests
 from PyQt6.QtCore import QThread, pyqtSignal
 
@@ -41,6 +43,22 @@ PROVIDERS = {
         "key_hint": "sk-xxxxxxxxxxxxxxxxxxxxxxxx",
         "signup_url": "platform.deepseek.com",
         "free_info": "Бесплатно · 100 запросов/день · без карты · доступен в РФ без VPN",
+        "auth_header": "Bearer",
+    },
+    "gigachat": {
+        "name": "GigaChat ✅ РФ · Сбер",
+        "base_url": "https://gigachat.devices.sberbank.ru/api/v1",
+        "models": [
+            "GigaChat",
+            "GigaChat-Plus",
+            "GigaChat-Pro",
+            "GigaChat-Max",
+        ],
+        "default_model": "GigaChat",
+        "key_hint": "Авторизационные данные (base64 client_id:secret)",
+        "signup_url": "developers.sber.ru/studio",
+        "free_info": "Бесплатно · 150 000 токенов/мес · доступен в РФ без VPN",
+        "auth_type": "gigachat_oauth",
         "auth_header": "Bearer",
     },
     "groq": {
@@ -121,6 +139,24 @@ class Summarizer(QThread):
         self.base_url = (base_url.rstrip("/") if provider == "custom"
                          else cfg["base_url"])
 
+    def _get_gigachat_token(self) -> str:
+        """Получает OAuth access token для GigaChat."""
+        auth_url = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+        headers = {
+            "Authorization": f"Basic {self.api_key.strip()}",
+            "RqUID": str(uuid.uuid4()),
+            "Content-Type": "application/x-www-form-urlencoded",
+        }
+        resp = requests.post(
+            auth_url,
+            headers=headers,
+            data={"scope": "GIGACHAT_API_PERS"},
+            verify=False,   # GigaChat использует корпоративный сертификат Сбера
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return resp.json()["access_token"]
+
     def run(self):
         if not self.base_url:
             self.error_occurred.emit("Укажи URL API в настройках.")
@@ -133,8 +169,21 @@ class Summarizer(QThread):
             self.progress.emit(f"Генерирую конспект ({self.provider} / {self.model})…")
 
             headers = {"Content-Type": "application/json"}
-            if self.api_key.strip():
+
+            # GigaChat: OAuth авторизация
+            if self.provider == "gigachat":
+                if not self.api_key.strip():
+                    self.error_occurred.emit(
+                        "Укажи авторизационные данные GigaChat в настройках.\n"
+                        "Получить: developers.sber.ru/studio → Мои проекты → API ключи"
+                    )
+                    return
+                self.progress.emit("Получаю токен GigaChat…")
+                token = self._get_gigachat_token()
+                headers["Authorization"] = f"Bearer {token}"
+            elif self.api_key.strip():
                 headers["Authorization"] = f"Bearer {self.api_key.strip()}"
+
             # OpenRouter требует доп. заголовки
             if self.provider == "openrouter":
                 headers["HTTP-Referer"] = "https://github.com/lesson-recorder"
@@ -152,12 +201,15 @@ class Summarizer(QThread):
                 "stream": True,
             }
 
+            # GigaChat использует корпоративный SSL-сертификат Сбера
+            verify_ssl = (self.provider != "gigachat")
             response = requests.post(
                 f"{self.base_url}/chat/completions",
                 headers=headers,
                 json=payload,
                 stream=True,
                 timeout=120,
+                verify=verify_ssl,
             )
 
             if response.status_code == 401:

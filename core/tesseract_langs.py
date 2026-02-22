@@ -2,15 +2,16 @@
 Управление языковыми пакетами Tesseract OCR.
 
 Языки хранятся в двух местах:
-  1. Системная tessdata: C:\\Program Files\\Tesseract-OCR\\tessdata\\  (устанавливается с Tesseract)
-  2. Пользовательская tessdata: ~/.lesson_recorder/tessdata/  (скачивается этим модулем)
+  1. Системная tessdata: C:\Program Files\Tesseract-OCR\tessdata\
+  2. Пользовательская tessdata: ~/.lesson_recorder/tessdata/
 
-При OCR используется пользовательская папка как основная.
-Системные языки автоматически зеркалируются в пользовательскую при первом использовании.
-Новые языки скачиваются с GitHub (tesseract-ocr/tessdata).
+При OCR всегда используется пользовательская папка (TESSDATA_PREFIX).
+Системные языки автоматически копируются туда при первом использовании.
+Новые языки скачиваются с GitHub.
 """
 import os
 import shutil
+import subprocess
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -22,12 +23,10 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
 # ── Пути ──────────────────────────────────────────────────────────────────────
 
-SYSTEM_TESSDATA = Path(r"C:\Program Files\Tesseract-OCR\tessdata")
-USER_TESSDATA   = Path.home() / ".lesson_recorder" / "tessdata"
-
+SYSTEM_TESSDATA   = Path(r"C:\Program Files\Tesseract-OCR\tessdata")
+USER_TESSDATA     = Path.home() / ".lesson_recorder" / "tessdata"
 TESSDATA_BASE_URL = "https://github.com/tesseract-ocr/tessdata/raw/main"
 
-# Человекочитаемые имена (дублируем здесь чтобы не зависеть от photo_ocr)
 LANG_NAMES: dict[str, str] = {
     "rus": "Русский",
     "eng": "English",
@@ -70,14 +69,59 @@ LANG_NAMES: dict[str, str] = {
     "equ": "Формулы/Math",
 }
 
-# Языки доступные для скачивания
 DOWNLOADABLE_LANGS = list(LANG_NAMES.keys())
+_SKIP_STEMS = {"snum", "pdf", "configs", "tessconfigs", ""}
 
 
-# ── Утилиты ───────────────────────────────────────────────────────────────────
+# ── Поиск Tesseract ───────────────────────────────────────────────────────────
+
+def find_tesseract_cmd() -> str | None:
+    """Ищет tesseract.exe: стандартные пути → PATH."""
+    candidates = [
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+        r"C:\Users\Public\Tesseract-OCR\tesseract.exe",
+    ]
+    for p in candidates:
+        if Path(p).exists():
+            return p
+
+    # Ищем в PATH
+    import shutil as _shutil
+    found = _shutil.which("tesseract")
+    if found:
+        return found
+
+    return None
+
+
+def setup_tesseract() -> bool:
+    """
+    Настраивает pytesseract и TESSDATA_PREFIX.
+    Возвращает True если Tesseract найден.
+    НЕ импортирует из photo_ocr — нет circular dependency.
+    """
+    cmd = find_tesseract_cmd()
+    if cmd is None:
+        return False
+    try:
+        import pytesseract
+        pytesseract.pytesseract.tesseract_cmd = cmd
+
+        # Устанавливаем TESSDATA_PREFIX на пользовательскую папку
+        # чтобы Tesseract видел скачанные языки
+        user_td = ensure_user_tessdata()
+        os.environ["TESSDATA_PREFIX"] = str(user_td)
+
+        return True
+    except ImportError:
+        return False
+
+
+# ── Работа с файлами tessdata ─────────────────────────────────────────────────
 
 def ensure_user_tessdata() -> Path:
-    """Создаёт пользовательскую папку tessdata если не существует."""
+    """Создаёт пользовательскую папку tessdata."""
     USER_TESSDATA.mkdir(parents=True, exist_ok=True)
     return USER_TESSDATA
 
@@ -87,7 +131,6 @@ def get_lang_file(code: str, tessdata_dir: Path) -> Path:
 
 
 def is_lang_available(code: str) -> bool:
-    """Проверяет наличие языка в пользовательской или системной tessdata."""
     return (
         get_lang_file(code, USER_TESSDATA).exists() or
         get_lang_file(code, SYSTEM_TESSDATA).exists()
@@ -96,95 +139,108 @@ def is_lang_available(code: str) -> bool:
 
 def get_available_langs() -> list[str]:
     """
-    Возвращает список всех доступных языков (из обеих tessdata папок).
-    Исключает служебные файлы (osd, snum, pdf и т.п.).
+    Сканирует обе tessdata папки и возвращает список всех доступных языков.
+    НЕ использует pytesseract.get_languages() — он видит только системные языки.
     """
     langs: set[str] = set()
-    skip = {"snum", "pdf", ""}
 
     for tessdata in [USER_TESSDATA, SYSTEM_TESSDATA]:
         if tessdata.exists():
             for f in tessdata.glob("*.traineddata"):
                 code = f.stem
-                if code not in skip:
+                if code not in _SKIP_STEMS:
                     langs.add(code)
-
-    # Дополнительно через pytesseract API (системные)
-    try:
-        import pytesseract
-        from core.photo_ocr import _setup_tesseract
-        _setup_tesseract()
-        for ln in pytesseract.get_languages(config=""):
-            if ln not in skip:
-                langs.add(ln)
-    except Exception:
-        pass
 
     return sorted(langs)
 
 
+def mirror_system_langs_to_user() -> int:
+    """
+    Копирует все .traineddata из системной tessdata в пользовательскую
+    если их там нет. Возвращает количество скопированных файлов.
+    """
+    if not SYSTEM_TESSDATA.exists():
+        return 0
+    ensure_user_tessdata()
+    count = 0
+    for f in SYSTEM_TESSDATA.glob("*.traineddata"):
+        dest = USER_TESSDATA / f.name
+        if not dest.exists():
+            try:
+                shutil.copy2(f, dest)
+                count += 1
+            except OSError:
+                pass
+    return count
+
+
 def mirror_system_lang(code: str) -> bool:
-    """
-    Копирует системный .traineddata в пользовательскую папку если его там нет.
-    Возвращает True если файл теперь есть в пользовательской папке.
-    """
+    """Копирует один язык из системной tessdata в пользовательскую."""
     user_file = get_lang_file(code, USER_TESSDATA)
     if user_file.exists():
         return True
-
     sys_file = get_lang_file(code, SYSTEM_TESSDATA)
     if sys_file.exists():
         ensure_user_tessdata()
-        shutil.copy2(sys_file, user_file)
-        return True
-
+        try:
+            shutil.copy2(sys_file, user_file)
+            return True
+        except OSError:
+            return False
     return False
 
 
 def prepare_tessdata_for_ocr(lang_codes: list[str]) -> tuple[str, str]:
     """
     Готовит tessdata для OCR:
-    - Зеркалирует из системной в пользовательскую если нужно
-    - Возвращает (lang_string, tessdata_dir) для передачи в pytesseract
-
-    Возвращает ("", "") если языки недоступны.
+    1. Синхронизирует все системные языки в USER_TESSDATA (при первом вызове)
+    2. Устанавливает TESSDATA_PREFIX = USER_TESSDATA
+    3. Возвращает (lang_string, tessdata_dir_str)
     """
     ensure_user_tessdata()
-    available = []
 
-    for code in lang_codes:
-        user_file = get_lang_file(code, USER_TESSDATA)
-        if user_file.exists():
-            available.append(code)
-        elif mirror_system_lang(code):
-            available.append(code)
-        # Язык недоступен — пропускаем, OCR продолжится без него
+    # При первом вызове — зеркалируем ВСЕ системные языки
+    # Это гарантирует что eng, rus и т.п. доступны в USER_TESSDATA
+    mirror_system_langs_to_user()
+
+    # Устанавливаем TESSDATA_PREFIX — Tesseract будет искать здесь
+    tessdata_dir = str(USER_TESSDATA)
+    os.environ["TESSDATA_PREFIX"] = tessdata_dir
+
+    # Фильтруем: только языки которые реально есть в USER_TESSDATA
+    available = [
+        code for code in lang_codes
+        if get_lang_file(code, USER_TESSDATA).exists()
+    ]
 
     if not available:
-        return "", ""
+        # Если ничего нет — пробуем eng как last resort
+        eng_file = get_lang_file("eng", USER_TESSDATA)
+        if eng_file.exists():
+            available = ["eng"]
+        else:
+            return "eng", tessdata_dir
 
-    return "+".join(available), str(USER_TESSDATA)
+    return "+".join(available), tessdata_dir
 
 
 def get_missing_langs(lang_codes: list[str]) -> list[str]:
-    """Возвращает список языков которых нет ни в системной ни в пользовательской tessdata."""
     return [c for c in lang_codes if not is_lang_available(c)]
 
 
-# ── Поток скачивания ──────────────────────────────────────────────────────────
+# ── Поток скачивания языков ───────────────────────────────────────────────────
 
 class LangDownloadThread(QThread):
-    """Скачивает один или несколько .traineddata файлов."""
-    lang_started  = pyqtSignal(str)        # code
-    lang_progress = pyqtSignal(str, int)   # code, 0-100
-    lang_done     = pyqtSignal(str)        # code
-    lang_error    = pyqtSignal(str, str)   # code, message
+    lang_started  = pyqtSignal(str)
+    lang_progress = pyqtSignal(str, int)
+    lang_done     = pyqtSignal(str)
+    lang_error    = pyqtSignal(str, str)
     all_done      = pyqtSignal()
 
     def __init__(self, lang_codes: list[str]):
         super().__init__()
-        self.lang_codes = lang_codes
-        self._cancelled = False
+        self.lang_codes  = lang_codes
+        self._cancelled  = False
 
     def cancel(self):
         self._cancelled = True
@@ -197,18 +253,24 @@ class LangDownloadThread(QThread):
             if self._cancelled:
                 break
 
-            self.lang_started.emit(code)
+            # Если уже есть — пропускаем
             dest = get_lang_file(code, USER_TESSDATA)
-
-            # Пропускаем если уже есть
             if dest.exists():
                 self.lang_done.emit(code)
                 continue
 
+            # Сначала пробуем скопировать из системной tessdata
+            if mirror_system_lang(code):
+                self.lang_started.emit(code)
+                self.lang_done.emit(code)
+                continue
+
+            # Скачиваем с GitHub
+            self.lang_started.emit(code)
             url = f"{TESSDATA_BASE_URL}/{code}.traineddata"
             tmp = dest.with_suffix(".tmp")
             try:
-                r = requests.get(url, stream=True, timeout=60)
+                r = requests.get(url, stream=True, timeout=90)
                 r.raise_for_status()
                 total = int(r.headers.get("content-length", 0))
                 downloaded = 0
@@ -239,16 +301,13 @@ class LangDownloadThread(QThread):
 # ── Диалог установки языков ───────────────────────────────────────────────────
 
 class LangInstallDialog(QDialog):
-    """
-    Диалог выбора и скачивания языковых пакетов Tesseract.
-    Показывает: ✅ установлен | ⬇ доступен для скачивания.
-    """
-    langs_changed = pyqtSignal()   # emit когда что-то скачалось
+    """Диалог скачивания языковых пакетов Tesseract."""
+    langs_changed = pyqtSignal()
 
     def __init__(self, preselect: list[str] | None = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Установка языков OCR")
-        self.setMinimumSize(560, 500)
+        self.setMinimumSize(560, 520)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
         self.setStyleSheet("""
             QDialog { background: #1a1a1a; color: #e0e0e0; }
@@ -257,10 +316,9 @@ class LangInstallDialog(QDialog):
         """)
 
         self._preselect = set(preselect or [])
-        self._checkboxes: dict[str, QCheckBox] = {}
-        self._status_labels: dict[str, QLabel] = {}
+        self._checkboxes:   dict[str, QCheckBox] = {}
+        self._status_labels: dict[str, QLabel]   = {}
         self._download_thread: LangDownloadThread | None = None
-
         self._available_now = set(get_available_langs())
 
         self._build_ui()
@@ -275,21 +333,38 @@ class LangInstallDialog(QDialog):
         layout.addWidget(hdr)
 
         hint = QLabel(
-            "Отметь языки для скачивания. Уже установленные помечены ✅.\n"
-            "Файлы сохраняются в ~/.lesson_recorder/tessdata/  (~20–50 МБ каждый)"
+            "✅ — уже установлен  |  отмечай языки для скачивания.\n"
+            "Файлы сохраняются в ~/.lesson_recorder/tessdata/  (~20–50 МБ каждый)."
         )
         hint.setStyleSheet("color: #888; font-size: 12px;")
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
-        # Кнопки быстрого выбора
+        # Системная tessdata — если есть, показываем инфо
+        if SYSTEM_TESSDATA.exists():
+            sys_langs = [f.stem for f in SYSTEM_TESSDATA.glob("*.traineddata")
+                         if f.stem not in _SKIP_STEMS]
+            if sys_langs:
+                sys_info = QLabel(
+                    f"ℹ️ Найдена системная Tesseract: {len(sys_langs)} языков. "
+                    "Они будут скопированы автоматически при первом OCR."
+                )
+                sys_info.setStyleSheet(
+                    "color: #4a9eff; font-size: 11px;"
+                    " background: #1a2a3a; border-radius: 5px; padding: 5px 8px;"
+                )
+                sys_info.setWordWrap(True)
+                layout.addWidget(sys_info)
+
+        # Быстрые кнопки выбора
         quick_row = QHBoxLayout()
-        for caption, codes in [
-            ("🇷🇺 Рус+Eng",  ["rus", "eng"]),
-            ("🇪🇺 Европейские", ["rus", "eng", "deu", "fra", "spa", "ita", "por", "pol"]),
-            ("Все",            DOWNLOADABLE_LANGS),
-            ("Снять",          []),
-        ]:
+        presets = [
+            ("🇷🇺 Рус+Eng",      ["rus", "eng"]),
+            ("🇪🇺 Европейские",  ["rus", "eng", "deu", "fra", "spa", "ita", "por", "pol", "ukr"]),
+            ("Все",               DOWNLOADABLE_LANGS),
+            ("Снять",             []),
+        ]
+        for caption, codes in presets:
             btn = QPushButton(caption)
             btn.setFixedHeight(26)
             btn.setStyleSheet(
@@ -297,8 +372,8 @@ class LangInstallDialog(QDialog):
                 " border-radius:5px; padding:0 10px; font-size:11px; }"
                 "QPushButton:hover { background:#333; color:#fff; }"
             )
-            _codes = list(codes)
-            btn.clicked.connect(lambda _, c=_codes: self._quick_select(c))
+            _c = list(codes)
+            btn.clicked.connect(lambda _, c=_c: self._quick_select(c))
             quick_row.addWidget(btn)
         quick_row.addStretch()
         layout.addLayout(quick_row)
@@ -307,9 +382,8 @@ class LangInstallDialog(QDialog):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setStyleSheet(
-            "QScrollArea { border: 1px solid #2a2a2a; border-radius: 8px; background: #111; }"
+            "QScrollArea { border:1px solid #2a2a2a; border-radius:8px; background:#111; }"
         )
-
         grid_w = QWidget()
         grid_w.setStyleSheet("background: transparent;")
         grid = QGridLayout(grid_w)
@@ -319,36 +393,34 @@ class LangInstallDialog(QDialog):
 
         COLS = 2
         for idx, code in enumerate(DOWNLOADABLE_LANGS):
-            name = LANG_NAMES.get(code, code.upper())
+            name      = LANG_NAMES.get(code, code.upper())
             installed = code in self._available_now
 
-            # Чекбокс с именем языка
             cb = QCheckBox(f"{name}  [{code}]")
             cb.setChecked(code in self._preselect and not installed)
-            cb.setEnabled(not installed)   # установленные — серые (уже есть)
-            style_color = "#666" if installed else "#d0d0d0"
+            cb.setEnabled(not installed)
+            color = "#555" if installed else "#d0d0d0"
             cb.setStyleSheet(
-                f"QCheckBox {{ color: {style_color}; font-size: 12px; }}"
-                "QCheckBox::indicator { width: 14px; height: 14px; }"
+                f"QCheckBox {{ color:{color}; font-size:12px; }}"
+                "QCheckBox::indicator { width:14px; height:14px; }"
                 "QCheckBox::indicator:unchecked { background:#2a2a2a; border:1px solid #444; border-radius:3px; }"
                 "QCheckBox::indicator:checked   { background:#4a9eff; border:1px solid #4a9eff; border-radius:3px; }"
                 "QCheckBox::indicator:disabled  { background:#1a1a1a; border:1px solid #333; border-radius:3px; }"
             )
             self._checkboxes[code] = cb
 
-            # Статус (✅ / размер / прогресс)
-            status = QLabel("✅ установлен" if installed else "")
-            status.setStyleSheet("color: #4caf50; font-size: 11px; min-width: 100px;")
+            status = QLabel("✅" if installed else "")
+            status.setStyleSheet("color:#4caf50; font-size:11px; min-width:80px;")
             self._status_labels[code] = status
 
-            row, col_cb, col_st = idx // COLS, (idx % COLS) * 2, (idx % COLS) * 2 + 1
+            row = idx // COLS
+            col_cb = (idx % COLS) * 2
             grid.addWidget(cb, row, col_cb)
-            grid.addWidget(status, row, col_st)
+            grid.addWidget(status, row, col_cb + 1)
 
         scroll.setWidget(grid_w)
         layout.addWidget(scroll)
 
-        # Прогресс
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setFixedHeight(6)
@@ -360,14 +432,13 @@ class LangInstallDialog(QDialog):
         layout.addWidget(self.progress_bar)
 
         self.status_label = QLabel("")
-        self.status_label.setStyleSheet("color: #888; font-size: 12px;")
+        self.status_label.setStyleSheet("color:#888; font-size:12px;")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
-        # Кнопки
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("color: #2a2a2a;")
+        sep.setStyleSheet("color:#2a2a2a;")
         layout.addWidget(sep)
 
         btn_row = QHBoxLayout()
@@ -394,15 +465,10 @@ class LangInstallDialog(QDialog):
         btn_row.addWidget(self.install_btn)
         layout.addLayout(btn_row)
 
-    # ── Выбор ────────────────────────────────────────────────────────────────
-
     def _quick_select(self, codes: list[str]):
         for code, cb in self._checkboxes.items():
-            if not cb.isEnabled():
-                continue   # уже установлен
-            cb.setChecked(code in codes)
-
-    # ── Скачивание ───────────────────────────────────────────────────────────
+            if cb.isEnabled():
+                cb.setChecked(code in codes)
 
     def _start_download(self):
         to_install = [
@@ -410,7 +476,7 @@ class LangInstallDialog(QDialog):
             if cb.isChecked() and cb.isEnabled()
         ]
         if not to_install:
-            self.status_label.setText("Ничего не выбрано для установки.")
+            self.status_label.setText("Ничего не выбрано.")
             return
 
         self.install_btn.setEnabled(False)
@@ -428,33 +494,33 @@ class LangInstallDialog(QDialog):
 
     def _on_lang_started(self, code: str):
         name = LANG_NAMES.get(code, code)
-        self.status_label.setText(f"⬇ Скачиваю: {name} [{code}]…")
-        self._status_labels[code].setText("⬇ скачиваю…")
-        self._status_labels[code].setStyleSheet("color: #4a9eff; font-size: 11px;")
+        self.status_label.setText(f"⬇ {name} [{code}]…")
+        self._status_labels[code].setText("⬇…")
+        self._status_labels[code].setStyleSheet("color:#4a9eff; font-size:11px;")
         self.progress_bar.setValue(0)
 
     def _on_lang_progress(self, code: str, pct: int):
         self.progress_bar.setValue(pct)
-        self._status_labels[code].setText(f"⬇ {pct}%")
+        self._status_labels[code].setText(f"{pct}%")
 
     def _on_lang_done(self, code: str):
-        self._status_labels[code].setText("✅ установлен")
-        self._status_labels[code].setStyleSheet("color: #4caf50; font-size: 11px;")
+        self._status_labels[code].setText("✅")
+        self._status_labels[code].setStyleSheet("color:#4caf50; font-size:11px;")
         cb = self._checkboxes[code]
         cb.setChecked(False)
         cb.setEnabled(False)
         self.langs_changed.emit()
 
     def _on_lang_error(self, code: str, msg: str):
-        self._status_labels[code].setText("❌ ошибка")
-        self._status_labels[code].setStyleSheet("color: #f44336; font-size: 11px;")
+        self._status_labels[code].setText("❌")
+        self._status_labels[code].setStyleSheet("color:#f44336; font-size:11px;")
         self._status_labels[code].setToolTip(msg)
 
     def _on_all_done(self):
         self.install_btn.setEnabled(True)
         self.close_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
-        self.status_label.setText("✅ Готово! Языки установлены.")
+        self.status_label.setText("✅ Готово!")
         self.langs_changed.emit()
 
     def closeEvent(self, event):
