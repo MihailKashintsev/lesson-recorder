@@ -11,6 +11,7 @@ from PyQt6.QtGui import QFont, QColor, QPainter, QPen
 from core.recorder import Recorder, get_audio_path
 from core.transcriber import Transcriber
 from core.summarizer import Summarizer
+from core.photo_ocr import PhotoOcrDialog
 import core.database as db
 
 
@@ -84,6 +85,7 @@ class RecordingWidget(QWidget):
         self._transcriber = None
         self._summarizer = None
         self._elapsed = 0
+        self._photo_ocr_text = ""   # текст распознанный с фотографий
 
         self._timer = QTimer()
         self._timer.setInterval(100)
@@ -115,6 +117,27 @@ class RecordingWidget(QWidget):
         self.record_btn.setStyleSheet(self._record_btn_style(False))
         self.record_btn.clicked.connect(self._toggle_recording)
         btn_container.addWidget(self.record_btn)
+
+        self.photo_btn = QPushButton("📷  Добавить фото")
+        self.photo_btn.setFixedSize(220, 36)
+        self.photo_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2a5298;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                font-size: 13px;
+            }
+            QPushButton:hover { background-color: #3a6fd8; }
+            QPushButton:disabled { background-color: #1a2a4a; color: #555; }
+        """)
+        self.photo_btn.clicked.connect(self._open_photo_ocr)
+        btn_container.addWidget(self.photo_btn)
+
+        self.photo_status_label = QLabel("")
+        self.photo_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.photo_status_label.setStyleSheet("color: #4a9eff; font-size: 11px;")
+        btn_container.addWidget(self.photo_status_label)
 
         self.timer_label = QLabel("00:00:00")
         self.timer_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -182,6 +205,27 @@ class RecordingWidget(QWidget):
         elif self._state == STATE_RECORDING:
             self._stop_recording()
 
+    def _open_photo_ocr(self):
+        """Открывает диалог добавления фото и запускает OCR."""
+        dlg = PhotoOcrDialog(self)
+        result = dlg.exec()
+        if result == PhotoOcrDialog.DialogCode.Accepted:
+            text = dlg.get_ocr_text()
+            if text:
+                self._photo_ocr_text = (
+                    (self._photo_ocr_text + "\n\n" + text)
+                    if self._photo_ocr_text else text
+                )
+                lines = self._photo_ocr_text.count("\n") + 1
+                photo_count = self._photo_ocr_text.count("[Фото ")
+                self.photo_status_label.setText(
+                    f"📷 {photo_count} фото · {len(self._photo_ocr_text)} симв. — будут добавлены к конспекту"
+                )
+                self._log(f"\n📷 Добавлен текст с {photo_count} фото ({len(self._photo_ocr_text)} симв.)")
+            else:
+                self.photo_status_label.setText("📷 Фото добавлены, но текст не распознан")
+        # Если пропустили — ничего не делаем, просто закрыли диалог
+
     def _start_recording(self):
         from ui.settings_widget import load_settings
         settings = load_settings()
@@ -209,6 +253,11 @@ class RecordingWidget(QWidget):
         self._start_time = time.time()
         self._timer.start()
         self.log_area.clear()
+        self.photo_status_label.setText(
+            f"📷 {self._photo_ocr_text.count('[Фото ')} фото добавлено"
+            if self._photo_ocr_text else ""
+        )
+        self.photo_btn.setEnabled(False)
         self.record_btn.setText("⏹  Остановить")
         self.record_btn.setStyleSheet(self._record_btn_style(True))
         self._log("Запись начата…")
@@ -244,11 +293,21 @@ class RecordingWidget(QWidget):
         self._state = STATE_SUMMARIZING
         self.status_label.setText("Составляю конспект…")
 
+        # Объединяем транскрипцию речи с текстом с фотографий
+        combined_text = text
+        if self._photo_ocr_text:
+            combined_text = (
+                f"{text}\n\n"
+                f"--- Текст с фотографий (доски, слайды, заметки) ---\n"
+                f"{self._photo_ocr_text}"
+            )
+            self._log(f"📷 Текст с фото добавлен к транскрипции для конспекта")
+
         from ui.settings_widget import load_settings
         settings = load_settings()
         self._summarizer = Summarizer(
-            text,
-            provider=settings.get("ai_provider", "groq"),
+            combined_text,
+            provider=settings.get("ai_provider", "deepseek"),
             api_key=settings.get("ai_api_key", ""),
             model=settings.get("ai_model", ""),
             base_url=settings.get("ai_custom_url", ""),
@@ -270,8 +329,12 @@ class RecordingWidget(QWidget):
         self.record_btn.setEnabled(True)
         self.record_btn.setText("⏺  Начать запись")
         self.record_btn.setStyleSheet(self._record_btn_style(False))
+        self.photo_btn.setEnabled(True)
         self._state = STATE_IDLE
         self.source_label.setText("")
+        # Сбрасываем фото для следующего урока
+        self._photo_ocr_text = ""
+        self.photo_status_label.setText("")
         self.lesson_saved.emit()
 
     def _on_error(self, msg: str):
@@ -281,6 +344,7 @@ class RecordingWidget(QWidget):
         self.record_btn.setEnabled(True)
         self.record_btn.setText("⏺  Начать запись")
         self.record_btn.setStyleSheet(self._record_btn_style(False))
+        self.photo_btn.setEnabled(True)
         self._state = STATE_IDLE
 
     def _tick(self):
