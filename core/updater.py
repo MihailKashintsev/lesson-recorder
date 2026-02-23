@@ -269,19 +269,21 @@ class UpdateDialog(QDialog):
 
     def _on_downloaded(self, new_exe: str):
         cur_exe = sys.executable
-        tmp_bat  = os.path.join(tempfile.gettempdir(), "lr_update.bat")
+        tmp_bat = os.path.join(tempfile.gettempdir(), "lr_update.bat")
 
+        # ✅ ИСПРАВЛЕНО: таймаут батника 6с — заведомо больше обратного отсчёта (3с).
+        # Раньше оба таймера были по 3с и гонились — приложение не успевало закрыться.
         if self.is_portable:
             bat = (
                 "@echo off\r\n"
-                "timeout /t 3 /nobreak > nul\r\n"
+                "timeout /t 6 /nobreak > nul\r\n"
                 f'copy /Y "{new_exe}" "{cur_exe}" > nul\r\n'
                 f'start "" "{cur_exe}"\r\n'
             )
         else:
             bat = (
                 "@echo off\r\n"
-                "timeout /t 3 /nobreak > nul\r\n"
+                "timeout /t 6 /nobreak > nul\r\n"
                 f'"{new_exe}" /SILENT /RESTARTAPPLICATIONS\r\n'
             )
 
@@ -311,7 +313,10 @@ class UpdateDialog(QDialog):
             self._countdown -= 1
         else:
             self._countdown_timer.stop()
-            QApplication.quit()
+            # ✅ ИСПРАВЛЕНО: os._exit(0) убивает процесс мгновенно вместе со всеми
+            # фоновыми потоками. QApplication.quit() только постил событие в очередь
+            # и зависал, если downloader-поток ещё работал.
+            os._exit(0)
 
     def _on_error(self, msg: str):
         self.status_label.setText(f"❌ {msg}")

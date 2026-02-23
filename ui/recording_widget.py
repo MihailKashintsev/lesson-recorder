@@ -289,7 +289,7 @@ class RecordingWidget(QWidget):
             }}
             QPushButton:hover {{ color: {c['text']}; border-color: {c['text_muted']}; }}
         """)
-        self.clear_btn.clicked.connect(self.log_area.clear)
+        self.clear_btn.clicked.connect(lambda: self.log_area.clear())
         log_header.addWidget(self.clear_btn)
         content_layout.addLayout(log_header)
 
