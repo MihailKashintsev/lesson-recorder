@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QLineEdit, QPushButton, QGroupBox, QFormLayout,
     QMessageBox, QScrollArea, QFrame, QButtonGroup, QRadioButton,
-    QCheckBox,
+    QCheckBox, QStackedWidget,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 import json
@@ -141,6 +141,10 @@ class SettingsWidget(QWidget):
 
         # ✅ НОВОЕ: Выбор устройства ввода
         self.combo_mic_device = QComboBox()
+        # Ограничиваем ширину — длинные имена устройств не должны растягивать форму
+        self.combo_mic_device.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.combo_mic_device.setMinimumContentsLength(20)
+        self.combo_mic_device.setMaximumWidth(360)
         self._populate_mic_devices()
         audio_form.addRow("Микрофон:", self.combo_mic_device)
 
@@ -203,6 +207,9 @@ class SettingsWidget(QWidget):
         provider_lbl.setStyleSheet(f"color: {c['text_muted']};")
 
         self.combo_provider = QComboBox()
+        self.combo_provider.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.combo_provider.setMinimumContentsLength(18)
+        self.combo_provider.setMaximumWidth(320)
         for pid, pcfg in PROVIDERS.items():
             rf_tag = " ✅ РФ" if pcfg.get("rf_available") else ""
             self.combo_provider.addItem(pcfg["name"] + rf_tag, pid)
@@ -262,26 +269,40 @@ class SettingsWidget(QWidget):
         key_row.addWidget(self.toggle_key_btn)
         ai_layout.addLayout(key_row)
 
-        # Модель
+        # Модель — QStackedWidget вместо двух виджетов в одной строке
         model_row = QHBoxLayout()
         model_lbl = QLabel("Модель:")
         model_lbl.setFixedWidth(120)
         model_lbl.setStyleSheet(f"color: {c['text_muted']};")
 
+        # ✅ ИСПРАВЛЕНО: раньше combo и lineEdit были в одной строке одновременно,
+        # при растяжении окна они визуально накладывались.
+        # Теперь — один контейнер-стек, который показывает только один виджет.
+        self._model_stack = QStackedWidget()
         self.combo_ai_model = QComboBox()
+        self.combo_ai_model.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.combo_ai_model.setMinimumContentsLength(20)
+
         self.edit_custom_model = QLineEdit()
         self.edit_custom_model.setPlaceholderText("Введи название модели вручную")
-        self.edit_custom_model.setVisible(False)
+
+        self._model_stack.addWidget(self.combo_ai_model)   # index 0 — стандартный
+        self._model_stack.addWidget(self.edit_custom_model) # index 1 — кастомный
 
         model_row.addWidget(model_lbl)
-        model_row.addWidget(self.combo_ai_model)
-        model_row.addWidget(self.edit_custom_model)
+        model_row.addWidget(self._model_stack)
         ai_layout.addLayout(model_row)
 
-        # Инфо о выбранной модели
+        # Инфо о выбранной модели — отступ через пустой лейбл, без хардкодного padding-left
+        model_info_row = QHBoxLayout()
+        _spacer_lbl = QLabel()
+        _spacer_lbl.setFixedWidth(120)
         self.model_info_lbl = QLabel("")
-        self.model_info_lbl.setStyleSheet(f"color: {c['text_muted']}; font-size: 11px; padding-left: 120px;")
-        ai_layout.addWidget(self.model_info_lbl)
+        self.model_info_lbl.setStyleSheet(f"color: {c['text_muted']}; font-size: 11px;")
+        self.model_info_lbl.setWordWrap(True)
+        model_info_row.addWidget(_spacer_lbl)
+        model_info_row.addWidget(self.model_info_lbl)
+        ai_layout.addLayout(model_info_row)
         self.combo_ai_model.currentIndexChanged.connect(self._on_model_changed)
 
         # Кастомный URL
@@ -405,8 +426,9 @@ class SettingsWidget(QWidget):
         self.edit_api_key.setPlaceholderText(cfg.get("key_hint", ""))
 
         is_custom = provider_id == "custom"
-        self.combo_ai_model.setVisible(not is_custom)
-        self.edit_custom_model.setVisible(is_custom)
+        # ✅ ИСПРАВЛЕНО: переключаем стек (index 0 = combo, 1 = lineEdit)
+        # вместо setVisible() на двух виджетах в одной строке
+        self._model_stack.setCurrentIndex(1 if is_custom else 0)
         self.url_lbl.setVisible(is_custom)
         self.edit_custom_url.setVisible(is_custom)
         self.signup_btn.setVisible(bool(cfg.get("signup_url")))

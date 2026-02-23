@@ -1,5 +1,10 @@
 """
-Управление языковыми пакетами Tesseract OCR.
+Управление Tesseract OCR и языковыми пакетами.
+
+Новые возможности:
+  - Скачивание и установка Tesseract прямо из приложения
+  - Удаление отдельных языковых пакетов
+  - Увеличенный интерфейс с вкладками
 
 Языки ищутся в:
   1. Рядом с tesseract.exe (динамически)
@@ -8,17 +13,26 @@
 """
 import os
 import shutil
+import tempfile
+import subprocess
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QProgressBar, QScrollArea, QWidget, QGridLayout, QCheckBox, QFrame,
+    QProgressBar, QScrollArea, QWidget, QGridLayout, QCheckBox,
+    QFrame, QTabWidget,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
 USER_TESSDATA     = Path.home() / ".lesson_recorder" / "tessdata"
 TESSDATA_BASE_URL = "https://github.com/tesseract-ocr/tessdata/raw/main"
 _SKIP_STEMS       = {"snum", "pdf", "configs", "tessconfigs", "osd", ""}
+
+TESSERACT_INSTALLER_URL = (
+    "https://github.com/UB-Mannheim/tesseract/releases/download/"
+    "v5.5.0.20241111/tesseract-ocr-w64-setup-5.5.0.20241111.exe"
+)
+TESSERACT_INSTALLER_VERSION = "5.5.0"
 
 LANG_NAMES: dict[str, str] = {
     "rus": "Русский",    "eng": "English",       "deu": "Deutsch",
@@ -38,31 +52,25 @@ LANG_NAMES: dict[str, str] = {
 DOWNLOADABLE_LANGS = list(LANG_NAMES.keys())
 
 
-# ── Поиск Tesseract ───────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Утилиты поиска
+# ─────────────────────────────────────────────────────────────────────────────
 
 def find_tesseract_cmd() -> str | None:
-    """
-    Ищет tesseract.exe: стандартные пути → PATH → реестр Windows
-    → рядом с найденными tessdata → домашняя папка пользователя.
-    """
-    # 1. Стандартные пути
     for p in [
         r"C:\Program Files\Tesseract-OCR\tesseract.exe",
         r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
         r"C:\Tesseract-OCR\tesseract.exe",
         r"C:\Tesseract\tesseract.exe",
         r"C:\tools\Tesseract-OCR\tesseract.exe",
-        r"C:\Users\Public\Tesseract-OCR\tesseract.exe",
     ]:
         if Path(p).exists():
             return p
 
-    # 2. PATH
     found = shutil.which("tesseract")
     if found:
         return found
 
-    # 3. Реестр Windows (самый надёжный способ)
     try:
         import winreg
         for hive in [winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER]:
@@ -78,11 +86,9 @@ def find_tesseract_cmd() -> str | None:
     except ImportError:
         pass
 
-    # 4. Рядом с tessdata папками (tessdata есть — exe на уровень выше)
     for tessdata_path in [
         r"C:\Program Files\Tesseract-OCR\tessdata",
         r"C:\Program Files (x86)\Tesseract-OCR\tessdata",
-        r"C:\Tesseract-OCR\tessdata",
     ]:
         td = Path(tessdata_path)
         if td.exists():
@@ -90,7 +96,6 @@ def find_tesseract_cmd() -> str | None:
             if exe.exists():
                 return str(exe)
 
-    # 5. Поиск в домашней папке пользователя (последний resort)
     try:
         for exe in Path.home().rglob("tesseract.exe"):
             return str(exe)
@@ -101,9 +106,6 @@ def find_tesseract_cmd() -> str | None:
 
 
 def get_all_tessdata_dirs() -> list[Path]:
-    """
-    Возвращает все tessdata папки: рядом с exe, пользовательская, стандартные.
-    """
     dirs: list[Path] = []
     cmd = find_tesseract_cmd()
     if cmd:
@@ -128,7 +130,6 @@ def setup_tesseract() -> bool:
     try:
         import pytesseract
         pytesseract.pytesseract.tesseract_cmd = cmd
-        # TESSDATA_PREFIX: USER_TESSDATA если там есть файлы, иначе рядом с exe
         if USER_TESSDATA.exists() and any(USER_TESSDATA.glob("*.traineddata")):
             os.environ["TESSDATA_PREFIX"] = str(USER_TESSDATA)
         else:
@@ -139,8 +140,6 @@ def setup_tesseract() -> bool:
     except ImportError:
         return False
 
-
-# ── tessdata утилиты ──────────────────────────────────────────────────────────
 
 def ensure_user_tessdata() -> Path:
     USER_TESSDATA.mkdir(parents=True, exist_ok=True)
@@ -156,13 +155,24 @@ def is_lang_available(code: str) -> bool:
 
 
 def get_available_langs() -> list[str]:
-    """Сканирует ВСЕ tessdata папки и возвращает отсортированный список языков."""
     langs: set[str] = set()
     for d in get_all_tessdata_dirs():
         for f in d.glob("*.traineddata"):
             if f.stem not in _SKIP_STEMS:
                 langs.add(f.stem)
     return sorted(langs)
+
+
+def delete_lang(code: str) -> bool:
+    """Удаляет языковой пакет из пользовательской tessdata папки."""
+    path = get_lang_file(code, USER_TESSDATA)
+    if path.exists():
+        try:
+            path.unlink()
+            return True
+        except OSError:
+            return False
+    return False
 
 
 def mirror_system_langs_to_user() -> int:
@@ -186,11 +196,8 @@ def prepare_tessdata_for_ocr(lang_codes: list[str]) -> tuple[str, str]:
     ensure_user_tessdata()
     mirror_system_langs_to_user()
 
-    # Ищем языки сначала в USER_TESSDATA (там уже всё скопировано)
     available = [c for c in lang_codes if get_lang_file(c, USER_TESSDATA).exists()]
-
     if not available:
-        # Ищем в других директориях
         for code in lang_codes:
             for d in get_all_tessdata_dirs():
                 if get_lang_file(code, d).exists():
@@ -215,7 +222,28 @@ def prepare_tessdata_for_ocr(lang_codes: list[str]) -> tuple[str, str]:
     return "+".join(available), tessdata_dir
 
 
-# ── Поток скачивания ──────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Общие стили
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _btn_style(bg: str, fg: str = "#fff") -> str:
+    return (
+        f"QPushButton{{background:{bg};color:{fg};border:none;"
+        f"border-radius:8px;padding:9px 24px;font-size:13px;font-weight:600;}}"
+        f"QPushButton:hover{{background:{bg}cc;}}"
+        f"QPushButton:disabled{{background:#252525;color:#555;}}"
+    )
+
+_BTN_OUTLINE = (
+    "QPushButton{background:transparent;color:#888;border:1px solid #3a3a3a;"
+    "border-radius:8px;padding:9px 24px;font-size:13px;}"
+    "QPushButton:hover{background:#252525;color:#ccc;}"
+)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Потоки
+# ─────────────────────────────────────────────────────────────────────────────
 
 class LangDownloadThread(QThread):
     lang_started  = pyqtSignal(str)
@@ -242,7 +270,6 @@ class LangDownloadThread(QThread):
             if dest.exists():
                 self.lang_done.emit(code)
                 continue
-            # Копируем из системной если есть
             self.lang_started.emit(code)
             for d in get_all_tessdata_dirs():
                 src = get_lang_file(code, d)
@@ -254,7 +281,6 @@ class LangDownloadThread(QThread):
                         self.lang_error.emit(code, str(e))
                     break
             else:
-                # Скачиваем с GitHub
                 url = f"{TESSDATA_BASE_URL}/{code}.traineddata"
                 tmp = dest.with_suffix(".tmp")
                 try:
@@ -270,7 +296,9 @@ class LangDownloadThread(QThread):
                                 f.write(chunk)
                                 downloaded += len(chunk)
                                 if total:
-                                    self.lang_progress.emit(code, int(downloaded / total * 100))
+                                    self.lang_progress.emit(
+                                        code, int(downloaded / total * 100)
+                                    )
                     if self._cancelled:
                         tmp.unlink(missing_ok=True)
                         break
@@ -282,151 +310,565 @@ class LangDownloadThread(QThread):
         self.all_done.emit()
 
 
-# ── Диалог установки языков ───────────────────────────────────────────────────
+class TesseractInstallerThread(QThread):
+    progress = pyqtSignal(int)
+    status   = pyqtSignal(str)
+    finished = pyqtSignal(str)
+    error    = pyqtSignal(str)
+
+    def __init__(self):
+        super().__init__()
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        import requests
+        try:
+            self.status.emit("Подключаюсь к серверу…")
+            tmp_dir = tempfile.mkdtemp(prefix="lr_tess_")
+            dest    = Path(tmp_dir) / "tesseract-installer.exe"
+            tmp     = dest.with_suffix(".tmp")
+
+            r = requests.get(TESSERACT_INSTALLER_URL, stream=True, timeout=30)
+            r.raise_for_status()
+            total      = int(r.headers.get("content-length", 0))
+            downloaded = 0
+
+            self.status.emit(f"Скачиваю Tesseract {TESSERACT_INSTALLER_VERSION}…")
+            with open(tmp, "wb") as f:
+                for chunk in r.iter_content(chunk_size=65536):
+                    if self._cancelled:
+                        tmp.unlink(missing_ok=True)
+                        return
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total:
+                            self.progress.emit(int(downloaded / total * 100))
+
+            tmp.rename(dest)
+            self.status.emit("Загрузка завершена — запускаю установщик…")
+            self.finished.emit(str(dest))
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Вкладка: Tesseract
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TesseractTab(QWidget):
+    installed = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._thread: TesseractInstallerThread | None = None
+        self._build()
+
+    def _build(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(20)
+        layout.setContentsMargins(32, 32, 32, 32)
+
+        # Статус-карточка
+        cmd = find_tesseract_cmd()
+        if cmd:
+            bg, border, icon = "#0a2010", "#4caf5044", "✅"
+            msg = f"Tesseract найден:\n{cmd}"
+            msg_color = "#4caf50"
+        else:
+            bg, border, icon = "#1e1400", "#ffb30044", "⚠️"
+            msg = "Tesseract не найден на этом компьютере"
+            msg_color = "#ffb300"
+
+        card = QWidget()
+        card.setStyleSheet(
+            f"background:{bg}; border:1px solid {border}; border-radius:12px;"
+        )
+        card_row = QHBoxLayout(card)
+        card_row.setContentsMargins(24, 20, 24, 20)
+        card_row.setSpacing(16)
+        ic = QLabel(icon)
+        ic.setStyleSheet("font-size:32px;")
+        card_row.addWidget(ic)
+        msg_lbl = QLabel(msg)
+        msg_lbl.setStyleSheet(f"color:{msg_color}; font-size:14px;")
+        msg_lbl.setWordWrap(True)
+        card_row.addWidget(msg_lbl, stretch=1)
+        layout.addWidget(card)
+
+        # Описание
+        desc = QLabel(
+            "<b>Tesseract OCR</b> — бесплатный движок распознавания текста (Google).<br>"
+            "Без него функция «Фото → Текст» не работает.<br><br>"
+            f"Будет скачан установщик <b>v{TESSERACT_INSTALLER_VERSION}</b> (~25 МБ) "
+            "с официального репозитория <b>UB-Mannheim</b>."
+        )
+        desc.setStyleSheet("color:#aaa; font-size:13px;")
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+
+        # Прогресс
+        self.pbar = QProgressBar()
+        self.pbar.setRange(0, 100)
+        self.pbar.setFixedHeight(10)
+        self.pbar.setVisible(False)
+        self.pbar.setStyleSheet(
+            "QProgressBar{border:none;background:#2a2a2a;border-radius:5px;}"
+            "QProgressBar::chunk{background:#4a9eff;border-radius:5px;}"
+        )
+        layout.addWidget(self.pbar)
+
+        self.status_lbl = QLabel("")
+        self.status_lbl.setStyleSheet("color:#888; font-size:12px;")
+        self.status_lbl.setWordWrap(True)
+        layout.addWidget(self.status_lbl)
+
+        # Кнопки
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(12)
+        self.dl_btn = QPushButton("⬇  Скачать и установить Tesseract")
+        self.dl_btn.setFixedHeight(46)
+        self.dl_btn.setStyleSheet(_btn_style("#2a5298"))
+        self.dl_btn.clicked.connect(self._start_download)
+        btn_row.addWidget(self.dl_btn)
+
+        self.cancel_btn = QPushButton("Отмена")
+        self.cancel_btn.setFixedHeight(46)
+        self.cancel_btn.setStyleSheet(_BTN_OUTLINE)
+        self.cancel_btn.setVisible(False)
+        self.cancel_btn.clicked.connect(self._cancel)
+        btn_row.addWidget(self.cancel_btn)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        note = QLabel(
+            "💡 При установке рекомендуется отметить <b>«Additional language data»</b> — "
+            "тогда языки скачивать отдельно не нужно."
+        )
+        note.setStyleSheet(
+            "color:#888; font-size:12px; background:#1c1c1c;"
+            " border-radius:8px; padding:10px 14px;"
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        layout.addStretch()
+
+    def _start_download(self):
+        self.dl_btn.setEnabled(False)
+        self.cancel_btn.setVisible(True)
+        self.pbar.setVisible(True)
+        self.pbar.setValue(0)
+        self._thread = TesseractInstallerThread()
+        self._thread.progress.connect(self.pbar.setValue)
+        self._thread.status.connect(self.status_lbl.setText)
+        self._thread.finished.connect(self._on_downloaded)
+        self._thread.error.connect(self._on_error)
+        self._thread.start()
+
+    def _on_downloaded(self, exe_path: str):
+        self.pbar.setValue(100)
+        self.cancel_btn.setVisible(False)
+        try:
+            subprocess.Popen([exe_path], shell=True)
+            self.status_lbl.setText(
+                "✅ Установщик запущен. После установки перезапусти приложение."
+            )
+            self.installed.emit()
+        except Exception as e:
+            self.status_lbl.setText(f"❌ Не удалось запустить: {e}")
+        self.dl_btn.setEnabled(True)
+
+    def _on_error(self, msg: str):
+        self.status_lbl.setText(f"❌ {msg}")
+        self.pbar.setVisible(False)
+        self.cancel_btn.setVisible(False)
+        self.dl_btn.setEnabled(True)
+
+    def _cancel(self):
+        if self._thread:
+            self._thread.cancel()
+        self.cancel_btn.setVisible(False)
+        self.dl_btn.setEnabled(True)
+        self.pbar.setVisible(False)
+        self.status_lbl.setText("Отменено.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Вкладка: Языки
+# ─────────────────────────────────────────────────────────────────────────────
+
+class LangsTab(QWidget):
+    langs_changed = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._thread: LangDownloadThread | None = None
+        self._checkboxes:  dict[str, QCheckBox] = {}
+        self._row_widgets: dict[str, QWidget]   = {}
+        self._available  = set(get_available_langs())
+        self._user_langs = self._scan_user_langs()
+        self._grid_layout: QGridLayout | None = None
+        self._grid_container: QWidget | None  = None
+        self._build()
+
+    def _scan_user_langs(self) -> set[str]:
+        if not USER_TESSDATA.exists():
+            return set()
+        return {
+            f.stem for f in USER_TESSDATA.glob("*.traineddata")
+            if f.stem not in _SKIP_STEMS
+        }
+
+    def refresh(self):
+        self._available  = set(get_available_langs())
+        self._user_langs = self._scan_user_langs()
+        self._rebuild_grid()
+
+    # ── строим UI ────────────────────────────────────────────────────────
+
+    def _build(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(14)
+        layout.setContentsMargins(32, 24, 32, 24)
+
+        # Инфо о tessdata
+        dirs = get_all_tessdata_dirs()
+        if dirs:
+            info_txt = "📁 tessdata: " + "  ·  ".join(str(d) for d in dirs[:2])
+        else:
+            info_txt = "⚠️ tessdata не найдена. Сначала установи Tesseract (вкладка «Tesseract»)."
+        info = QLabel(info_txt)
+        info.setStyleSheet(
+            "color:#4a9eff; font-size:12px; background:#131d2a;"
+            " border-radius:6px; padding:8px 12px;"
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        # Быстрый выбор
+        qrow = QHBoxLayout()
+        qrow.setSpacing(8)
+        for cap, codes in [
+            ("🇷🇺 Рус+Eng",  ["rus", "eng"]),
+            ("🇪🇺 Европа",   ["rus","eng","deu","fra","spa","ita","por","pol","ukr"]),
+            ("Все",           DOWNLOADABLE_LANGS),
+            ("Снять всё",     []),
+        ]:
+            b = QPushButton(cap)
+            b.setFixedHeight(32)
+            b.setStyleSheet(
+                "QPushButton{background:#202020;color:#aaa;border:1px solid #333;"
+                "border-radius:7px;padding:0 16px;font-size:12px;}"
+                "QPushButton:hover{background:#2a2a2a;color:#fff;}"
+            )
+            _codes = list(codes)
+            b.clicked.connect(lambda _, c=_codes: self._quick(c))
+            qrow.addWidget(b)
+        qrow.addStretch()
+        layout.addLayout(qrow)
+
+        # Сетка
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(scroll.Shape.NoFrame)
+        scroll.setStyleSheet(
+            "QScrollArea{border:1px solid #252525;border-radius:10px;background:#0e0e0e;}"
+            "QScrollBar:vertical{background:#1a1a1a;width:8px;border-radius:4px;}"
+            "QScrollBar::handle:vertical{background:#333;border-radius:4px;min-height:30px;}"
+        )
+        self._grid_container = QWidget()
+        self._grid_container.setStyleSheet("background:transparent;")
+        self._grid_layout = QGridLayout(self._grid_container)
+        self._grid_layout.setContentsMargins(16, 16, 16, 16)
+        self._grid_layout.setHorizontalSpacing(12)
+        self._grid_layout.setVerticalSpacing(4)
+        self._rebuild_grid()
+        scroll.setWidget(self._grid_container)
+        layout.addWidget(scroll)
+
+        # Прогресс
+        self.pbar = QProgressBar()
+        self.pbar.setRange(0, 100)
+        self.pbar.setFixedHeight(8)
+        self.pbar.setVisible(False)
+        self.pbar.setStyleSheet(
+            "QProgressBar{border:none;background:#252525;border-radius:4px;}"
+            "QProgressBar::chunk{background:#4a9eff;border-radius:4px;}"
+        )
+        layout.addWidget(self.pbar)
+
+        self.status = QLabel("")
+        self.status.setStyleSheet("color:#888; font-size:12px;")
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+
+        # Кнопка установки
+        brow = QHBoxLayout()
+        self.install_btn = QPushButton("⬇  Установить выбранные")
+        self.install_btn.setFixedHeight(44)
+        self.install_btn.setMinimumWidth(240)
+        self.install_btn.setStyleSheet(_btn_style("#27ae60"))
+        self.install_btn.clicked.connect(self._start_install)
+        brow.addWidget(self.install_btn)
+        brow.addStretch()
+        layout.addLayout(brow)
+
+    def _rebuild_grid(self):
+        while self._grid_layout.count():
+            item = self._grid_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self._checkboxes.clear()
+        self._row_widgets.clear()
+
+        COLS = 2
+        for idx, code in enumerate(DOWNLOADABLE_LANGS):
+            is_installed = code in self._available
+            is_user      = code in self._user_langs
+
+            row_w = QWidget()
+            row_w.setStyleSheet(
+                "background:#161616; border-radius:7px;" if is_installed
+                else "background:transparent;"
+            )
+            row_layout = QHBoxLayout(row_w)
+            row_layout.setContentsMargins(10, 5, 10, 5)
+            row_layout.setSpacing(8)
+
+            name = LANG_NAMES.get(code, code)
+            cb = QCheckBox(f"{name}  [{code}]")
+            cb.setEnabled(not is_installed)
+            cb.setStyleSheet(
+                f"QCheckBox{{color:{'#555' if is_installed else '#d8d8d8'};"
+                "font-size:13px;background:transparent;}}"
+                "QCheckBox::indicator{width:16px;height:16px;}"
+                "QCheckBox::indicator:unchecked{background:#252525;border:1px solid #444;border-radius:4px;}"
+                "QCheckBox::indicator:checked{background:#4a9eff;border:1px solid #4a9eff;border-radius:4px;}"
+                "QCheckBox::indicator:disabled{background:#1a1a1a;border:1px solid #2a2a2a;border-radius:4px;}"
+            )
+            self._checkboxes[code] = cb
+            row_layout.addWidget(cb, stretch=1)
+
+            if is_installed:
+                badge = QLabel("✅")
+                badge.setStyleSheet(
+                    "color:#4caf50; font-size:12px; background:transparent;"
+                )
+                row_layout.addWidget(badge)
+
+                if is_user:
+                    del_btn = QPushButton("🗑")
+                    del_btn.setFixedSize(30, 30)
+                    del_btn.setToolTip(f"Удалить {name}")
+                    del_btn.setStyleSheet(
+                        "QPushButton{background:#3a1a1a;color:#f44336;border:none;"
+                        "border-radius:6px;font-size:14px;}"
+                        "QPushButton:hover{background:#5a2020;}"
+                    )
+                    del_btn.clicked.connect(lambda _, c=code: self._delete_lang(c))
+                    row_layout.addWidget(del_btn)
+                else:
+                    sys_badge = QLabel("sys")
+                    sys_badge.setStyleSheet(
+                        "color:#555; font-size:10px; background:#1e1e1e;"
+                        " border-radius:4px; padding:2px 6px;"
+                    )
+                    sys_badge.setToolTip("Системный пакет — удалить через деинсталляцию Tesseract")
+                    row_layout.addWidget(sys_badge)
+            else:
+                placeholder = QLabel()
+                placeholder.setFixedWidth(50)
+                row_layout.addWidget(placeholder)
+
+            self._row_widgets[code] = row_w
+            grid_row = idx // COLS
+            grid_col = idx % COLS
+            self._grid_layout.addWidget(row_w, grid_row, grid_col)
+
+    # ── операции ─────────────────────────────────────────────────────────
+
+    def _quick(self, codes: list):
+        for code, cb in self._checkboxes.items():
+            if cb.isEnabled():
+                cb.setChecked(code in codes)
+
+    def _delete_lang(self, code: str):
+        name = LANG_NAMES.get(code, code)
+        if delete_lang(code):
+            self.status.setText(f"🗑 Удалён: {name} [{code}]")
+            self._available.discard(code)
+            self._user_langs.discard(code)
+            self._rebuild_grid()
+            self.langs_changed.emit()
+        else:
+            self.status.setText(
+                f"❌ Не удалось удалить [{code}] — файл не в пользовательской папке"
+            )
+
+    def _start_install(self):
+        to_do = [c for c, cb in self._checkboxes.items()
+                 if cb.isChecked() and cb.isEnabled()]
+        if not to_do:
+            self.status.setText("⚠️ Ничего не выбрано.")
+            return
+        self.install_btn.setEnabled(False)
+        self.pbar.setVisible(True)
+        self.pbar.setValue(0)
+        self.status.setText(f"⬇ Начинаю скачивать {len(to_do)} языков…")
+        self._thread = LangDownloadThread(to_do)
+        self._thread.lang_started.connect(
+            lambda c: self.status.setText(
+                f"⬇ {LANG_NAMES.get(c, c)} [{c}]…"
+            )
+        )
+        self._thread.lang_progress.connect(
+            lambda c, p: (
+                self.pbar.setValue(p),
+                self.status.setText(f"⬇ {LANG_NAMES.get(c, c)} [{c}]… {p}%"),
+            )
+        )
+        self._thread.lang_done.connect(self._on_lang_done)
+        self._thread.lang_error.connect(
+            lambda c, e: self.status.setText(f"❌ {LANG_NAMES.get(c, c)}: {e}")
+        )
+        self._thread.all_done.connect(self._on_all_done)
+        self._thread.start()
+
+    def _on_lang_done(self, code: str):
+        self._available.add(code)
+        self._user_langs.add(code)
+        self.langs_changed.emit()
+
+    def _on_all_done(self):
+        self.install_btn.setEnabled(True)
+        self.pbar.setVisible(False)
+        self.status.setText("✅ Все выбранные языки установлены!")
+        self._rebuild_grid()
+
+    def closeEvent(self, event):
+        if self._thread and self._thread.isRunning():
+            self._thread.cancel()
+            self._thread.wait(2000)
+        super().closeEvent(event)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Главный диалог
+# ─────────────────────────────────────────────────────────────────────────────
 
 class LangInstallDialog(QDialog):
     langs_changed = pyqtSignal()
 
     def __init__(self, preselect: list[str] | None = None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Установка языков OCR")
-        self.setMinimumSize(560, 520)
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
-        self.setStyleSheet("QDialog { background:#1a1a1a; color:#e0e0e0; } QLabel { color:#e0e0e0; }")
-        self._preselect  = set(preselect or [])
-        self._checkboxes: dict[str, QCheckBox] = {}
-        self._status_lbl: dict[str, QLabel]    = {}
-        self._thread: LangDownloadThread | None = None
-        self._available  = set(get_available_langs())
-        self._build_ui()
+        self.setWindowTitle("Tesseract OCR — Управление")
+        self.setMinimumSize(860, 680)
+        self.resize(920, 740)
+        self.setWindowFlags(
+            self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint
+        )
+        self.setStyleSheet("""
+            QDialog {
+                background: #111111;
+                color: #e0e0e0;
+            }
+            QTabWidget::pane {
+                border: 1px solid #252525;
+                border-top: none;
+                border-radius: 0 0 10px 10px;
+                background: #111111;
+            }
+            QTabBar {
+                background: transparent;
+            }
+            QTabBar::tab {
+                background: #191919;
+                color: #777;
+                border: 1px solid #252525;
+                border-bottom: none;
+                border-radius: 9px 9px 0 0;
+                padding: 11px 32px;
+                font-size: 13px;
+                margin-right: 4px;
+            }
+            QTabBar::tab:selected {
+                background: #111111;
+                color: #e0e0e0;
+                border-bottom: 1px solid #111111;
+            }
+            QTabBar::tab:hover:!selected {
+                background: #202020;
+                color: #bbb;
+            }
+            QLabel { background: transparent; color: #e0e0e0; }
+            QScrollBar:vertical {
+                background: #1a1a1a; width: 8px; border-radius: 4px;
+            }
+            QScrollBar::handle:vertical {
+                background: #353535; border-radius: 4px; min-height: 30px;
+            }
+        """)
+        self._preselect = list(preselect or [])
+        self._build()
 
-    def _build_ui(self):
+    def _build(self):
         layout = QVBoxLayout(self)
-        layout.setSpacing(12)
-        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        layout.addWidget(QLabel("🌍  Языковые пакеты Tesseract OCR",
-            styleSheet="font-size:15px; font-weight:bold;"))
+        # ── Заголовок ────────────────────────────────────────────────────
+        header = QWidget()
+        header.setFixedHeight(64)
+        header.setStyleSheet("background:#181818; border-bottom:1px solid #252525;")
+        h_layout = QHBoxLayout(header)
+        h_layout.setContentsMargins(32, 0, 32, 0)
+        title = QLabel("⚙️  Tesseract OCR")
+        title.setStyleSheet("font-size:18px; font-weight:700; color:#e0e0e0;")
+        h_layout.addWidget(title)
+        h_layout.addStretch()
+        sub = QLabel("Установка и управление языковыми пакетами")
+        sub.setStyleSheet("color:#555; font-size:12px;")
+        h_layout.addWidget(sub)
+        layout.addWidget(header)
 
-        dirs = get_all_tessdata_dirs()
-        info_text = ("Найдены tessdata: " + ", ".join(str(d) for d in dirs)
-                     if dirs else "⚠️ tessdata не найдена — установи Tesseract")
-        info = QLabel(info_text)
-        info.setStyleSheet("color:#4a9eff; font-size:11px; background:#1a2a3a; border-radius:4px; padding:5px 8px;")
-        info.setWordWrap(True)
-        layout.addWidget(info)
+        # ── Вкладки ───────────────────────────────────────────────────────
+        self._tabs = QTabWidget()
+        self._tabs.setDocumentMode(True)
+        self._tabs.setContentsMargins(0, 0, 0, 0)
 
-        quick = QHBoxLayout()
-        for cap, codes in [("🇷🇺 Рус+Eng", ["rus","eng"]),
-                            ("🇪🇺 Европа",  ["rus","eng","deu","fra","spa","ita","por","pol","ukr"]),
-                            ("Все",         DOWNLOADABLE_LANGS), ("Снять", [])]:
-            b = QPushButton(cap)
-            b.setFixedHeight(26)
-            b.setStyleSheet("QPushButton{background:#2a2a2a;color:#aaa;border:1px solid #3a3a3a;border-radius:5px;padding:0 10px;font-size:11px;}QPushButton:hover{background:#333;color:#fff;}")
-            _c = list(codes)
-            b.clicked.connect(lambda _, c=_c: self._quick(c))
-            quick.addWidget(b)
-        quick.addStretch()
-        layout.addLayout(quick)
+        self._tess_tab  = TesseractTab()
+        self._langs_tab = LangsTab()
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("QScrollArea{border:1px solid #2a2a2a;border-radius:8px;background:#111;}")
-        gw = QWidget(); gw.setStyleSheet("background:transparent;")
-        grid = QGridLayout(gw)
-        grid.setContentsMargins(12, 12, 12, 12)
-        grid.setHorizontalSpacing(20); grid.setVerticalSpacing(6)
-        COLS = 2
-        for idx, code in enumerate(DOWNLOADABLE_LANGS):
-            ok = code in self._available
-            cb = QCheckBox(f"{LANG_NAMES.get(code, code)}  [{code}]")
-            cb.setChecked(code in self._preselect and not ok)
-            cb.setEnabled(not ok)
-            cb.setStyleSheet(
-                f"QCheckBox{{color:{'#555' if ok else '#d0d0d0'};font-size:12px;}}"
-                "QCheckBox::indicator{width:14px;height:14px;}"
-                "QCheckBox::indicator:unchecked{background:#2a2a2a;border:1px solid #444;border-radius:3px;}"
-                "QCheckBox::indicator:checked{background:#4a9eff;border:1px solid #4a9eff;border-radius:3px;}"
-                "QCheckBox::indicator:disabled{background:#1a1a1a;border:1px solid #333;border-radius:3px;}"
-            )
-            self._checkboxes[code] = cb
-            sl = QLabel("✅" if ok else "")
-            sl.setStyleSheet("color:#4caf50;font-size:11px;min-width:60px;")
-            self._status_lbl[code] = sl
-            r = idx // COLS; c = (idx % COLS) * 2
-            grid.addWidget(cb, r, c)
-            grid.addWidget(sl, r, c + 1)
-        scroll.setWidget(gw)
-        layout.addWidget(scroll)
+        self._tabs.addTab(self._tess_tab,  "🔧  Tesseract")
+        self._tabs.addTab(self._langs_tab, "🌍  Языки OCR")
 
-        self.pbar = QProgressBar()
-        self.pbar.setRange(0, 100); self.pbar.setFixedHeight(6); self.pbar.setVisible(False)
-        self.pbar.setStyleSheet("QProgressBar{border:none;background:#2a2a2a;border-radius:3px;}QProgressBar::chunk{background:#4a9eff;border-radius:3px;}")
-        layout.addWidget(self.pbar)
+        # Если Tesseract уже установлен — сразу показываем языки
+        if find_tesseract_cmd():
+            self._tabs.setCurrentIndex(1)
 
-        self.status = QLabel("")
-        self.status.setStyleSheet("color:#888;font-size:12px;"); self.status.setWordWrap(True)
-        layout.addWidget(self.status)
+        self._langs_tab.langs_changed.connect(self.langs_changed)
+        self._tess_tab.installed.connect(lambda: self._tabs.setCurrentIndex(1))
 
-        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine); sep.setStyleSheet("color:#2a2a2a;")
-        layout.addWidget(sep)
+        layout.addWidget(self._tabs)
 
-        row = QHBoxLayout()
-        close = QPushButton("Закрыть")
-        close.setStyleSheet("QPushButton{background:#2a2a2a;color:#888;border:1px solid #3a3a3a;border-radius:8px;padding:8px 24px;}QPushButton:hover{background:#333;color:#ccc;}")
-        close.clicked.connect(self.accept)
-        self.install_btn = QPushButton("⬇  Установить выбранные")
-        self.install_btn.setStyleSheet("QPushButton{background:#27ae60;color:white;border:none;border-radius:8px;padding:8px 28px;font-weight:bold;}QPushButton:hover{background:#2ecc71;}QPushButton:disabled{background:#1a3a2a;color:#555;}")
-        self.install_btn.clicked.connect(self._start)
-        row.addWidget(close); row.addStretch(); row.addWidget(self.install_btn)
-        layout.addLayout(row)
-
-    def _quick(self, codes):
-        for code, cb in self._checkboxes.items():
-            if cb.isEnabled():
-                cb.setChecked(code in codes)
-
-    def _start(self):
-        to_do = [c for c, cb in self._checkboxes.items() if cb.isChecked() and cb.isEnabled()]
-        if not to_do:
-            self.status.setText("Ничего не выбрано.")
-            return
-        self.install_btn.setEnabled(False)
-        self.pbar.setVisible(True)
-        self.status.setText(f"Скачиваю {len(to_do)} языков…")
-        self._thread = LangDownloadThread(to_do)
-        self._thread.lang_started.connect(lambda c: (
-            self.status.setText(f"⬇ {LANG_NAMES.get(c,c)} [{c}]…"),
-            self._status_lbl[c].setText("⬇…"),
-            self._status_lbl[c].setStyleSheet("color:#4a9eff;font-size:11px;"),
-            self.pbar.setValue(0)
-        ))
-        self._thread.lang_progress.connect(lambda c, p: (
-            self.pbar.setValue(p), self._status_lbl[c].setText(f"{p}%")
-        ))
-        self._thread.lang_done.connect(self._done_one)
-        self._thread.lang_error.connect(lambda c, e: (
-            self._status_lbl[c].setText("❌"),
-            self._status_lbl[c].setStyleSheet("color:#f44336;font-size:11px;"),
-            self._status_lbl[c].setToolTip(e)
-        ))
-        self._thread.all_done.connect(self._all_done)
-        self._thread.start()
-
-    def _done_one(self, code):
-        self._status_lbl[code].setText("✅")
-        self._status_lbl[code].setStyleSheet("color:#4caf50;font-size:11px;")
-        self._checkboxes[code].setChecked(False)
-        self._checkboxes[code].setEnabled(False)
-        self.langs_changed.emit()
-
-    def _all_done(self):
-        self.install_btn.setEnabled(True)
-        self.pbar.setVisible(False)
-        self.status.setText("✅ Готово!")
-        self.langs_changed.emit()
+        # ── Подвал ───────────────────────────────────────────────────────
+        footer = QWidget()
+        footer.setFixedHeight(62)
+        footer.setStyleSheet("background:#181818; border-top:1px solid #252525;")
+        f_layout = QHBoxLayout(footer)
+        f_layout.setContentsMargins(32, 0, 32, 0)
+        f_layout.addStretch()
+        close_btn = QPushButton("Закрыть")
+        close_btn.setFixedHeight(38)
+        close_btn.setMinimumWidth(120)
+        close_btn.setStyleSheet(_BTN_OUTLINE)
+        close_btn.clicked.connect(self.accept)
+        f_layout.addWidget(close_btn)
+        layout.addWidget(footer)
 
     def closeEvent(self, event):
-        if self._thread and self._thread.isRunning():
-            self._thread.cancel(); self._thread.wait(2000)
+        self._langs_tab.closeEvent(event)
         super().closeEvent(event)
