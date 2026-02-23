@@ -29,10 +29,10 @@ TESSDATA_BASE_URL = "https://github.com/tesseract-ocr/tessdata/raw/main"
 _SKIP_STEMS       = {"snum", "pdf", "configs", "tessconfigs", "osd", ""}
 
 TESSERACT_INSTALLER_URL = (
-    "https://github.com/UB-Mannheim/tesseract/releases/download/"
-    "v5.5.0.20241111/tesseract-ocr-w64-setup-5.5.0.20241111.exe"
+    "https://digi.bib.uni-mannheim.de/tesseract/"
+    "tesseract-ocr-w64-setup-5.4.0.20240606.exe"
 )
-TESSERACT_INSTALLER_VERSION = "5.5.0"
+TESSERACT_INSTALLER_VERSION = "5.4.0"
 
 LANG_NAMES: dict[str, str] = {
     "rus": "Русский",    "eng": "English",       "deu": "Deutsch",
@@ -403,7 +403,7 @@ class TesseractTab(QWidget):
         desc = QLabel(
             "<b>Tesseract OCR</b> — бесплатный движок распознавания текста (Google).<br>"
             "Без него функция «Фото → Текст» не работает.<br><br>"
-            f"Будет скачан установщик <b>v{TESSERACT_INSTALLER_VERSION}</b> (~25 МБ) "
+            f"Будет скачан установщик <b>v{TESSERACT_INSTALLER_VERSION}</b> (~48 МБ) "
             "с официального репозитория <b>UB-Mannheim</b>."
         )
         desc.setStyleSheet("color:#aaa; font-size:13px;")
