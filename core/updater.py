@@ -1,20 +1,19 @@
 """
 Автообновление LessonRecorder.
 
-Подход вдохновлён ren3d-install.bat (github.com/MihailKashintsev/ren3d):
-  — никакого PowerShell и его ExecutionPolicy
-  — никакого VBScript и WMI (медленно и ненадёжно)
-  — просто cmd.exe + timeout /t 3  →  запуск установщика
-  — QTimer для отсчёта в UI (не блокирует главный поток)
+✅ ИСПРАВЛЕНО: Раньше UpdateDialog создавался в фоновом потоке (threading.Thread),
+что нарушает правила PyQt6 и могло вызывать появление нового окна приложения.
+Теперь UpdateChecker — QThread, который находит обновление и сигналом передаёт
+данные в главный поток, где и создаётся диалог.
 
-Два пути:
-  Portable .exe в релизе → копируем файл, UAC не нужен
-  Setup .exe            → запускаем установщик, UAC всплывёт сам
+Подход из ren3d-install.bat:
+  — никакого PowerShell и его ExecutionPolicy
+  — cmd.exe + timeout /t 3  →  запуск установщика
+  — QTimer для отсчёта в UI (не блокирует главный поток)
 """
 import os
 import sys
 import tempfile
-import threading
 import subprocess
 
 import requests
@@ -45,15 +44,6 @@ def _get_latest_release() -> dict | None:
 
 
 def _find_asset(release: dict) -> tuple[str, str, bool] | None:
-    """
-    Ищет .exe в assets релиза.
-    Возвращает (name, url, is_portable).
-
-    Приоритет (как в ren3d-install.bat):
-      1. *portable*.exe  — не нужен UAC, просто заменяем файл
-      2. *Setup*.exe / *installer*.exe
-      3. любой другой .exe
-    """
     assets = release.get("assets", [])
 
     for a in assets:
@@ -71,6 +61,48 @@ def _find_asset(release: dict) -> tuple[str, str, bool] | None:
             return a["name"], a["browser_download_url"], False
 
     return None
+
+
+# ── ✅ QThread для проверки обновлений (не threading.Thread!) ─────────────────
+
+class UpdateCheckerThread(QThread):
+    """
+    Запускает сетевой запрос в фоне.
+    При нахождении обновления — сигнал → диалог показывается в главном потоке.
+    """
+    update_found = pyqtSignal(str, str, str, str, str, bool)
+    # (current, latest, changelog, download_url, asset_name, is_portable)
+
+    def run(self):
+        try:
+            import time
+            time.sleep(2)   # дать приложению запуститься
+
+            release = _get_latest_release()
+            if not release:
+                return
+
+            latest_tag = release.get("tag_name", "").lstrip("v")
+            try:
+                from packaging.version import Version
+                if Version(latest_tag) <= Version(__version__):
+                    return
+            except Exception:
+                return
+
+            asset = _find_asset(release)
+            if not asset:
+                return
+
+            asset_name, download_url, is_portable = asset
+            changelog = release.get("body", "")
+
+            self.update_found.emit(
+                __version__, latest_tag, changelog,
+                download_url, asset_name, is_portable
+            )
+        except Exception:
+            pass
 
 
 # ── Поток скачивания ──────────────────────────────────────────────────────────
@@ -149,7 +181,6 @@ class UpdateDialog(QDialog):
         ver.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(ver)
 
-        # Плашка типа обновления
         if self.is_portable:
             badge_text  = "✅ Портативная версия — установка без прав администратора"
             badge_color = "#4caf50"
@@ -221,8 +252,6 @@ class UpdateDialog(QDialog):
         btn_row.addWidget(self.update_btn)
         layout.addLayout(btn_row)
 
-    # ── Скачивание ────────────────────────────────────────────────────────
-
     def _start_download(self):
         self.update_btn.setEnabled(False)
         self.skip_btn.setEnabled(False)
@@ -239,19 +268,10 @@ class UpdateDialog(QDialog):
         self._downloader.start()
 
     def _on_downloaded(self, new_exe: str):
-        """
-        Подход из ren3d-install.bat:
-          cmd.exe + timeout /t 3 — самый простой и надёжный способ на Windows.
-          Никакого PowerShell, никакого WMI, никаких политик исполнения.
-
-        Portable: копируем новый exe поверх текущего, запускаем.
-        Installer: просто запускаем — UAC сам всплывёт.
-        """
         cur_exe = sys.executable
         tmp_bat  = os.path.join(tempfile.gettempdir(), "lr_update.bat")
 
         if self.is_portable:
-            # Portable: копируем файл и перезапускаем без UAC
             bat = (
                 "@echo off\r\n"
                 "timeout /t 3 /nobreak > nul\r\n"
@@ -259,7 +279,6 @@ class UpdateDialog(QDialog):
                 f'start "" "{cur_exe}"\r\n'
             )
         else:
-            # Installer: запускаем setup-файл (/RESTARTAPPLICATIONS — InnoSetup перезапустит сам)
             bat = (
                 "@echo off\r\n"
                 "timeout /t 3 /nobreak > nul\r\n"
@@ -269,20 +288,17 @@ class UpdateDialog(QDialog):
         with open(tmp_bat, "w", encoding="cp1251") as f:
             f.write(bat)
 
-        # Запускаем cmd ОТДЕЛЬНЫМ процессом — без close_fds (блокирует UI!)
-        # /min — свёрнутое окно, не пугает пользователя
         subprocess.Popen(
             ["cmd.exe", "/c", "start", "/min", "", "cmd.exe", "/c", tmp_bat],
             creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
         )
 
-        # QTimer отсчёт — НЕ блокируем главный поток
         self.skip_btn.setEnabled(False)
         self._countdown_timer = QTimer(self)
         self._countdown_timer.setInterval(1000)
         self._countdown_timer.timeout.connect(self._tick)
         self._countdown_timer.start()
-        self._tick()  # показываем сразу, не ждём первой секунды
+        self._tick()
 
     def _tick(self):
         if self._countdown > 0:
@@ -307,7 +323,7 @@ class UpdateDialog(QDialog):
 
 # ── Публичный API ─────────────────────────────────────────────────────────────
 
-def check_for_updates(parent=None, silent_if_latest: bool = True):
+def check_for_updates(parent=None):
     """Проверяет обновления. Если найдено — показывает диалог."""
     release = _get_latest_release()
     if not release:
@@ -341,10 +357,28 @@ def check_for_updates(parent=None, silent_if_latest: bool = True):
 
 
 def check_for_updates_async(parent=None):
-    """Проверяет обновления в фоне — не блокирует запуск приложения."""
-    def _worker():
-        import time
-        time.sleep(2)   # дать приложению запуститься
-        check_for_updates(parent, silent_if_latest=True)
+    """
+    ✅ ИСПРАВЛЕНО: Использует QThread + сигналы вместо threading.Thread.
+    Диалог создаётся и показывается только в главном потоке Qt.
+    Раньше Qt UI вызывался из фонового потока, что могло открывать новые окна.
+    """
+    checker = UpdateCheckerThread(parent)
 
-    threading.Thread(target=_worker, daemon=True).start()
+    def _show_dialog(current, latest, changelog, download_url, asset_name, is_portable):
+        dlg = UpdateDialog(
+            current=current,
+            latest=latest,
+            changelog=changelog,
+            download_url=download_url,
+            asset_name=asset_name,
+            is_portable=is_portable,
+            parent=parent,
+        )
+        dlg.exec()
+
+    checker.update_found.connect(_show_dialog)
+    checker.start()
+
+    # Сохраняем ссылку чтобы GC не удалил QThread до завершения
+    if parent is not None:
+        parent._update_checker = checker

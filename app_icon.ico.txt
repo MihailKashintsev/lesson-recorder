@@ -1,0 +1,12 @@
+This is a placeholder for app_icon.ico
+Replace this file with an actual .ico file (16x16, 32x32, 48x48 px).
+
+You can create one from a PNG at: https://convertio.co/png-ico/
+Or use: https://www.favicon.io/favicon-generator/
+
+Suggested icon: a microphone or recording button symbol.
+
+After replacing, the icon will appear in:
+- The window title bar
+- The taskbar
+- The desktop shortcut

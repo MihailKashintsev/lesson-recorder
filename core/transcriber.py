@@ -35,7 +35,7 @@ class Transcriber(QThread):
     def run(self):
         try:
             cmd = [
-                sys.executable,          # тот же python.exe что запустил приложение
+                sys.executable,
                 str(WORKER_PATH),
                 self.audio_path,
                 self.model_size,
@@ -53,7 +53,6 @@ class Transcriber(QThread):
 
             result_text = ""
 
-            # Читаем stdout построчно — каждая строка это JSON
             for line in self._process.stdout:
                 line = line.strip()
                 if not line:
@@ -71,12 +70,10 @@ class Transcriber(QThread):
                         self.error_occurred.emit(text)
                         return
                 except json.JSONDecodeError:
-                    # Не JSON строка — просто логируем
                     self.progress.emit(f"[worker] {line}")
 
             self._process.wait()
 
-            # Проверяем stderr на случай неожиданного краша
             stderr_output = self._process.stderr.read().strip()
             if self._process.returncode != 0 and not result_text:
                 error_msg = stderr_output or f"Процесс завершился с кодом {self._process.returncode}"

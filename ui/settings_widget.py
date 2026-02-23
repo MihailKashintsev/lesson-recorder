@@ -1,25 +1,29 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QLineEdit, QPushButton, QGroupBox, QFormLayout,
-    QMessageBox, QScrollArea, QFrame, QSizePolicy
+    QMessageBox, QScrollArea, QFrame, QButtonGroup, QRadioButton,
+    QCheckBox,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 import json
 from pathlib import Path
 
 from core.summarizer import PROVIDERS, get_provider_config
+from ui.theme import get_colors
 
 SETTINGS_PATH = Path.home() / ".lesson_recorder" / "settings.json"
 
 DEFAULTS = {
     "audio_source": "both",
+    "mic_device_index": None,
     "whisper_model": "tiny",
     "language": "auto",
-    "ai_provider": "groq",
+    "ai_provider": "deepseek",
     "ai_api_key": "",
-    "ai_model": "llama-3.3-70b-versatile",
+    "ai_model": "deepseek-chat",
     "ai_custom_url": "",
     "ai_custom_model": "",
+    "theme": "dark",
 }
 
 
@@ -40,13 +44,56 @@ def save_settings(settings: dict):
 
 
 class SettingsWidget(QWidget):
+    theme_changed = pyqtSignal(str)   # "dark" | "light"
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.settings = load_settings()
+        self._theme = self.settings.get("theme", "dark")
         self._build_ui()
 
+    def apply_theme(self, theme: str):
+        self._theme = theme
+        # Full rebuild would be heavy; easier to just re-apply stylesheet
+        c = get_colors(theme)
+        self.setStyleSheet(self._widget_stylesheet(c))
+
+    def _widget_stylesheet(self, c: dict) -> str:
+        return f"""
+            QWidget {{ background: {c['bg_main']}; color: {c['text']}; }}
+            QScrollArea, QScrollArea > QWidget > QWidget {{ background: {c['bg_main']}; }}
+            QGroupBox {{
+                color: {c['text_muted']};
+                font-weight: 600; font-size: 11px;
+                text-transform: uppercase; letter-spacing: 0.8px;
+                border: 1px solid {c['border']};
+                border-radius: 10px; margin-top: 14px; padding-top: 18px;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin; left: 12px; padding: 0 6px;
+                background: {c['bg_main']};
+            }}
+            QLabel {{ color: {c['text']}; background: transparent; }}
+            QComboBox {{
+                background: {c['bg_input']}; color: {c['text']};
+                border: 1px solid {c['border']}; border-radius: 6px; padding: 5px 10px;
+            }}
+            QComboBox::drop-down {{ border: none; }}
+            QComboBox QAbstractItemView {{
+                background: {c['bg_card'] if 'bg_card' in c else c['bg_input']};
+                color: {c['text']}; border: 1px solid {c['border']};
+            }}
+            QLineEdit {{
+                background: {c['bg_input']}; color: {c['text']};
+                border: 1px solid {c['border']}; border-radius: 6px; padding: 5px 10px;
+            }}
+            QLineEdit:focus {{ border-color: {c['border_active']}; }}
+            QCheckBox {{ color: {c['text']}; }}
+        """
+
     def _build_ui(self):
-        # Scroll area для маленьких экранов
+        c = get_colors(self._theme)
+
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -60,31 +107,55 @@ class SettingsWidget(QWidget):
         outer.addWidget(scroll)
 
         layout = QVBoxLayout(container)
-        layout.setSpacing(20)
-        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setSpacing(24)
+        layout.setContentsMargins(32, 32, 32, 32)
 
+        # ── Page title ────────────────────────────────────────────────────
+        title_row = QHBoxLayout()
         title = QLabel("Настройки")
-        title.setStyleSheet("font-size: 22px; font-weight: bold; color: #e0e0e0;")
-        layout.addWidget(title)
+        title.setStyleSheet(f"font-size: 22px; font-weight: 700; color: {c['text']};")
+        title_row.addWidget(title)
+        title_row.addStretch()
+
+        # Theme toggle
+        self.theme_btn = QPushButton()
+        self._update_theme_btn(c)
+        self.theme_btn.setFixedSize(100, 32)
+        self.theme_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.theme_btn.clicked.connect(self._toggle_theme)
+        title_row.addWidget(self.theme_btn)
+
+        layout.addLayout(title_row)
 
         # ── Аудио ─────────────────────────────────────────────────────────
         audio_group = QGroupBox("Запись аудио")
-        audio_group.setStyleSheet(self._group_style())
         audio_form = QFormLayout(audio_group)
-        audio_form.setSpacing(10)
+        audio_form.setSpacing(12)
+        audio_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
         self.combo_source = QComboBox()
         self.combo_source.addItems(["Микрофон", "Системный звук", "Оба источника"])
         src_map = {"mic": 0, "system": 1, "both": 2}
         self.combo_source.setCurrentIndex(src_map.get(self.settings["audio_source"], 2))
         audio_form.addRow("Источник:", self.combo_source)
+
+        # ✅ НОВОЕ: Выбор устройства ввода
+        self.combo_mic_device = QComboBox()
+        self._populate_mic_devices()
+        audio_form.addRow("Микрофон:", self.combo_mic_device)
+
+        mic_hint = QLabel("Выбор устройства применяется при записи микрофона или обоих источников")
+        mic_hint.setStyleSheet(f"color: {c['text_muted']}; font-size: 11px;")
+        mic_hint.setWordWrap(True)
+        audio_form.addRow("", mic_hint)
+
         layout.addWidget(audio_group)
 
         # ── Whisper ───────────────────────────────────────────────────────
-        whisper_group = QGroupBox("Транскрипция (Whisper — работает офлайн)")
-        whisper_group.setStyleSheet(self._group_style())
+        whisper_group = QGroupBox("Транскрипция — Whisper (офлайн)")
         whisper_form = QFormLayout(whisper_group)
-        whisper_form.setSpacing(10)
+        whisper_form.setSpacing(12)
+        whisper_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
         self.combo_whisper_model = QComboBox()
         models = ["tiny", "base", "small", "medium", "large-v2", "large-v3"]
@@ -93,10 +164,23 @@ class SettingsWidget(QWidget):
             self.combo_whisper_model.setCurrentIndex(models.index(self.settings["whisper_model"]))
         whisper_form.addRow("Модель:", self.combo_whisper_model)
 
+        whisper_info = QLabel(
+            "<b>tiny</b> — самая быстрая, загрузка ~75 МБ  ·  "
+            "<b>base</b> — быстрая, ~140 МБ  ·  "
+            "<b>small</b> — хорошая, ~460 МБ  ·  "
+            "<b>medium</b> — отличная, ~1.5 ГБ  ·  "
+            "<b>large</b> — лучшая, ~3 ГБ"
+        )
+        whisper_info.setStyleSheet(f"color: {c['text_muted']}; font-size: 11px;")
+        whisper_info.setWordWrap(True)
+        whisper_form.addRow("", whisper_info)
+
         self.combo_lang = QComboBox()
-        langs = {"auto": "Авто-определение", "ru": "Русский", "en": "English",
-                 "uk": "Українська", "de": "Deutsch", "fr": "Français",
-                 "es": "Español", "zh": "中文"}
+        langs = {
+            "auto": "Авто-определение", "ru": "Русский", "en": "English",
+            "uk": "Українська", "de": "Deutsch", "fr": "Français",
+            "es": "Español", "zh": "中文", "ja": "日本語",
+        }
         for code, name in langs.items():
             self.combo_lang.addItem(name, code)
         for i in range(self.combo_lang.count()):
@@ -105,51 +189,53 @@ class SettingsWidget(QWidget):
                 break
         whisper_form.addRow("Язык:", self.combo_lang)
 
-        note = QLabel("tiny — быстро  •  base — баланс  •  small/medium/large — медленнее, лучше")
-        note.setStyleSheet("color: #666; font-size: 11px;")
-        whisper_form.addRow("", note)
         layout.addWidget(whisper_group)
 
         # ── ИИ провайдер ──────────────────────────────────────────────────
         ai_group = QGroupBox("ИИ для конспектов")
-        ai_group.setStyleSheet(self._group_style())
         ai_layout = QVBoxLayout(ai_group)
         ai_layout.setSpacing(14)
 
         # Выбор провайдера
         provider_row = QHBoxLayout()
-        provider_label = QLabel("Провайдер:")
-        provider_label.setFixedWidth(110)
-        provider_label.setStyleSheet("color: #c0c0c0;")
+        provider_lbl = QLabel("Провайдер:")
+        provider_lbl.setFixedWidth(120)
+        provider_lbl.setStyleSheet(f"color: {c['text_muted']};")
 
         self.combo_provider = QComboBox()
         for pid, pcfg in PROVIDERS.items():
-            self.combo_provider.addItem(pcfg["name"], pid)
-        current_provider = self.settings.get("ai_provider", "groq")
+            rf_tag = " ✅ РФ" if pcfg.get("rf_available") else ""
+            self.combo_provider.addItem(pcfg["name"] + rf_tag, pid)
+
+        current_provider = self.settings.get("ai_provider", "deepseek")
         for i in range(self.combo_provider.count()):
             if self.combo_provider.itemData(i) == current_provider:
                 self.combo_provider.setCurrentIndex(i)
                 break
         self.combo_provider.currentIndexChanged.connect(self._on_provider_changed)
 
-        provider_row.addWidget(provider_label)
+        provider_row.addWidget(provider_lbl)
         provider_row.addWidget(self.combo_provider)
         ai_layout.addLayout(provider_row)
 
         # Инфо о провайдере
         self.provider_info = QLabel("")
-        self.provider_info.setStyleSheet(
-            "color: #4caf50; font-size: 11px; padding: 4px 8px; "
-            "background: #1a2a1a; border-radius: 4px;"
-        )
+        self.provider_info.setStyleSheet(f"""
+            color: {c['accent_green']};
+            font-size: 11px;
+            padding: 6px 10px;
+            background: transparent;
+            border: 1px solid {c['accent_green']};
+            border-radius: 6px;
+        """)
         self.provider_info.setWordWrap(True)
         ai_layout.addWidget(self.provider_info)
 
         # API ключ
         key_row = QHBoxLayout()
-        key_label = QLabel("API ключ:")
-        key_label.setFixedWidth(110)
-        key_label.setStyleSheet("color: #c0c0c0;")
+        key_lbl = QLabel("API ключ:")
+        key_lbl.setFixedWidth(120)
+        key_lbl.setStyleSheet(f"color: {c['text_muted']};")
 
         self.edit_api_key = QLineEdit(self.settings.get("ai_api_key", ""))
         self.edit_api_key.setEchoMode(QLineEdit.EchoMode.Password)
@@ -157,53 +243,66 @@ class SettingsWidget(QWidget):
         self.toggle_key_btn = QPushButton("👁")
         self.toggle_key_btn.setFixedSize(32, 32)
         self.toggle_key_btn.setCheckable(True)
-        self.toggle_key_btn.setStyleSheet(self._icon_btn_style())
+        self.toggle_key_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {c['bg_input']}; border: 1px solid {c['border']};
+                border-radius: 6px; font-size: 14px;
+            }}
+            QPushButton:hover {{ background: {c['bg_hover']}; }}
+            QPushButton:checked {{ background: {c['bg_selected']}; }}
+        """)
         self.toggle_key_btn.toggled.connect(
             lambda on: self.edit_api_key.setEchoMode(
                 QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password
             )
         )
 
-        key_row.addWidget(key_label)
+        key_row.addWidget(key_lbl)
         key_row.addWidget(self.edit_api_key)
         key_row.addWidget(self.toggle_key_btn)
         ai_layout.addLayout(key_row)
 
         # Модель
         model_row = QHBoxLayout()
-        model_label = QLabel("Модель:")
-        model_label.setFixedWidth(110)
-        model_label.setStyleSheet("color: #c0c0c0;")
+        model_lbl = QLabel("Модель:")
+        model_lbl.setFixedWidth(120)
+        model_lbl.setStyleSheet(f"color: {c['text_muted']};")
 
         self.combo_ai_model = QComboBox()
         self.edit_custom_model = QLineEdit()
         self.edit_custom_model.setPlaceholderText("Введи название модели вручную")
         self.edit_custom_model.setVisible(False)
 
-        model_row.addWidget(model_label)
+        model_row.addWidget(model_lbl)
         model_row.addWidget(self.combo_ai_model)
         model_row.addWidget(self.edit_custom_model)
         ai_layout.addLayout(model_row)
 
-        # Кастомный URL (только для custom провайдера)
+        # Инфо о выбранной модели
+        self.model_info_lbl = QLabel("")
+        self.model_info_lbl.setStyleSheet(f"color: {c['text_muted']}; font-size: 11px; padding-left: 120px;")
+        ai_layout.addWidget(self.model_info_lbl)
+        self.combo_ai_model.currentIndexChanged.connect(self._on_model_changed)
+
+        # Кастомный URL
         url_row = QHBoxLayout()
-        self.url_label = QLabel("URL API:")
-        self.url_label.setFixedWidth(110)
-        self.url_label.setStyleSheet("color: #c0c0c0;")
+        self.url_lbl = QLabel("URL API:")
+        self.url_lbl.setFixedWidth(120)
+        self.url_lbl.setStyleSheet(f"color: {c['text_muted']};")
         self.edit_custom_url = QLineEdit(self.settings.get("ai_custom_url", ""))
         self.edit_custom_url.setPlaceholderText("http://localhost:1234/v1")
-        url_row.addWidget(self.url_label)
+        url_row.addWidget(self.url_lbl)
         url_row.addWidget(self.edit_custom_url)
         ai_layout.addLayout(url_row)
 
-        # Кнопки: проверить + ссылка регистрации
+        # Кнопки
         btn_row = QHBoxLayout()
         self.test_btn = QPushButton("🔌 Проверить соединение")
-        self.test_btn.setStyleSheet(self._btn_style())
+        self.test_btn.setStyleSheet(self._secondary_btn_style(c))
         self.test_btn.clicked.connect(self._test_connection)
 
         self.signup_btn = QPushButton("🌐 Получить ключ →")
-        self.signup_btn.setStyleSheet(self._link_btn_style())
+        self.signup_btn.setStyleSheet(self._link_btn_style(c))
         self.signup_btn.clicked.connect(self._open_signup)
 
         btn_row.addWidget(self.test_btn)
@@ -216,64 +315,137 @@ class SettingsWidget(QWidget):
         # ── Сохранить ─────────────────────────────────────────────────────
         save_btn = QPushButton("💾  Сохранить настройки")
         save_btn.clicked.connect(self._save)
-        save_btn.setStyleSheet("""
-            QPushButton {
-                background: #4a9eff; color: white; border: none;
-                border-radius: 8px; padding: 10px 30px;
-                font-size: 14px; font-weight: bold;
-            }
-            QPushButton:hover { background: #5aadff; }
+        save_btn.setFixedHeight(44)
+        save_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {c['accent_blue']};
+                color: white; border: none;
+                border-radius: 8px;
+                font-size: 14px; font-weight: 600;
+                padding: 0 32px;
+            }}
+            QPushButton:hover {{ background: {c['accent_blue']}cc; }}
         """)
         layout.addWidget(save_btn, alignment=Qt.AlignmentFlag.AlignLeft)
         layout.addStretch()
 
         # Инициализируем под текущий провайдер
         self._on_provider_changed()
+        self.setStyleSheet(self._widget_stylesheet(c))
+
+    # ── Устройства ввода ──────────────────────────────────────────────────
+
+    def _populate_mic_devices(self):
+        self.combo_mic_device.clear()
+        self.combo_mic_device.addItem("По умолчанию", None)
+
+        try:
+            from core.recorder import get_input_devices
+            devices = get_input_devices()
+            for dev in devices:
+                name = dev["name"][:60]
+                self.combo_mic_device.addItem(f"{name}", dev["index"])
+        except Exception:
+            pass
+
+        # Восстанавливаем выбранное устройство
+        saved_idx = self.settings.get("mic_device_index", None)
+        for i in range(self.combo_mic_device.count()):
+            if self.combo_mic_device.itemData(i) == saved_idx:
+                self.combo_mic_device.setCurrentIndex(i)
+                break
+
+    # ── Тема ──────────────────────────────────────────────────────────────
+
+    def _update_theme_btn(self, c: dict):
+        if self._theme == "dark":
+            self.theme_btn.setText("☀  Светлая")
+            self.theme_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {c['bg_input']}; color: {c['text']};
+                    border: 1px solid {c['border']}; border-radius: 8px;
+                    font-size: 12px;
+                }}
+                QPushButton:hover {{ background: {c['bg_hover']}; }}
+            """)
+        else:
+            self.theme_btn.setText("🌙  Тёмная")
+            self.theme_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {c['bg_input']}; color: {c['text']};
+                    border: 1px solid {c['border']}; border-radius: 8px;
+                    font-size: 12px;
+                }}
+                QPushButton:hover {{ background: {c['bg_hover']}; }}
+            """)
+
+    def _toggle_theme(self):
+        new_theme = "light" if self._theme == "dark" else "dark"
+        self._theme = new_theme
+        c = get_colors(new_theme)
+        self._update_theme_btn(c)
+        self.theme_changed.emit(new_theme)
 
     # ── Провайдер изменился ───────────────────────────────────────────────
+
     def _on_provider_changed(self):
         provider_id = self.combo_provider.currentData()
         cfg = get_provider_config(provider_id)
+        c = get_colors(self._theme)
 
-        # Инфо
         self.provider_info.setText(cfg["free_info"])
 
-        # Placeholder и лейбл для ключа
         is_gigachat = (provider_id == "gigachat")
-        key_label_text = "Авторизация:" if is_gigachat else "API ключ:"
-        # Находим лейбл ключа в layout (он в key_row)
-        self.edit_api_key.setPlaceholderText(cfg["key_hint"])
-        # Показываем подсказку специфичную для GigaChat
         if is_gigachat:
             self.provider_info.setText(
                 cfg["free_info"] + "\n"
-                "Ключ: developers.sber.ru/studio → создай проект → скопируй «Авторизационные данные»"
+                "Ключ: developers.sber.ru/studio → создай проект → «Авторизационные данные»"
             )
-        else:
-            self.provider_info.setText(cfg["free_info"])
 
-        # Модели
+        self.edit_api_key.setPlaceholderText(cfg.get("key_hint", ""))
+
         is_custom = provider_id == "custom"
         self.combo_ai_model.setVisible(not is_custom)
         self.edit_custom_model.setVisible(is_custom)
-        self.url_label.setVisible(is_custom)
+        self.url_lbl.setVisible(is_custom)
         self.edit_custom_url.setVisible(is_custom)
         self.signup_btn.setVisible(bool(cfg.get("signup_url")))
 
         if not is_custom:
             self.combo_ai_model.clear()
+            model_info = cfg.get("model_info", {})
             for m in cfg["models"]:
+                # Добавляем информацию о модели в tooltip через addItem
                 self.combo_ai_model.addItem(m, m)
-            # Восстанавливаем сохранённую модель если подходит
+
             saved_model = self.settings.get("ai_model", cfg["default_model"])
+            restored = False
             for i in range(self.combo_ai_model.count()):
                 if self.combo_ai_model.itemData(i) == saved_model:
                     self.combo_ai_model.setCurrentIndex(i)
+                    restored = True
                     break
+            if not restored and self.combo_ai_model.count() > 0:
+                # Восстанавливаем default
+                for i in range(self.combo_ai_model.count()):
+                    if self.combo_ai_model.itemData(i) == cfg["default_model"]:
+                        self.combo_ai_model.setCurrentIndex(i)
+                        break
+
+            self._on_model_changed()
         else:
             self.edit_custom_model.setText(self.settings.get("ai_custom_model", ""))
+            self.model_info_lbl.setText("")
+
+    def _on_model_changed(self):
+        provider_id = self.combo_provider.currentData()
+        cfg = get_provider_config(provider_id)
+        model = self.combo_ai_model.currentData() or ""
+        info = cfg.get("model_info", {}).get(model, "")
+        self.model_info_lbl.setText(info)
 
     # ── Получить текущую модель ───────────────────────────────────────────
+
     def _get_current_model(self) -> str:
         provider_id = self.combo_provider.currentData()
         if provider_id == "custom":
@@ -287,6 +459,7 @@ class SettingsWidget(QWidget):
         return get_provider_config(provider_id)["base_url"]
 
     # ── Проверка соединения ───────────────────────────────────────────────
+
     def _test_connection(self):
         import requests as req
         provider_id = self.combo_provider.currentData()
@@ -303,11 +476,9 @@ class SettingsWidget(QWidget):
 
         headers = {"Content-Type": "application/json"}
 
-        # GigaChat: OAuth токен
         if provider_id == "gigachat":
             if not key:
-                QMessageBox.warning(self, "Нет ключа",
-                    "Укажи авторизационные данные GigaChat.")
+                QMessageBox.warning(self, "Нет ключа", "Укажи авторизационные данные GigaChat.")
                 return
             try:
                 import uuid
@@ -327,8 +498,7 @@ class SettingsWidget(QWidget):
                 headers["Authorization"] = f"Bearer {token}"
             except Exception as e:
                 QMessageBox.critical(self, "❌ Ошибка авторизации GigaChat",
-                    f"Не удалось получить токен:\n{e}\n\n"
-                    "Проверь авторизационные данные на developers.sber.ru/studio")
+                    f"Не удалось получить токен:\n{e}")
                 return
         elif key:
             headers["Authorization"] = f"Bearer {key}"
@@ -358,13 +528,12 @@ class SettingsWidget(QWidget):
                 QMessageBox.critical(self, "❌ Ошибка", "Неверный API ключ.")
             elif r.status_code == 404:
                 QMessageBox.warning(self, "⚠️ Модель не найдена",
-                    f"Модель «{model}» не найдена.\nПроверь название.")
+                    f"Модель «{model}» не найдена.")
             else:
                 QMessageBox.warning(self, "⚠️ Ошибка",
                     f"Код {r.status_code}:\n{r.text[:300]}")
         except req.exceptions.ConnectionError:
-            QMessageBox.critical(self, "❌ Нет соединения",
-                f"Не удалось подключиться к:\n{base_url}")
+            QMessageBox.critical(self, "❌ Нет соединения", f"Не удалось подключиться:\n{base_url}")
         except Exception as e:
             QMessageBox.critical(self, "❌ Ошибка", str(e))
 
@@ -376,11 +545,16 @@ class SettingsWidget(QWidget):
             webbrowser.open(f"https://{url}")
 
     # ── Сохранение ────────────────────────────────────────────────────────
+
     def _save(self):
         provider_id = self.combo_provider.currentData()
         src_keys = ["mic", "system", "both"]
+
+        mic_device_index = self.combo_mic_device.currentData()
+
         self.settings.update({
             "audio_source": src_keys[self.combo_source.currentIndex()],
+            "mic_device_index": mic_device_index,
             "whisper_model": self.combo_whisper_model.currentText(),
             "language": self.combo_lang.currentData(),
             "ai_provider": provider_id,
@@ -388,54 +562,40 @@ class SettingsWidget(QWidget):
             "ai_model": self._get_current_model(),
             "ai_custom_url": self.edit_custom_url.text().strip(),
             "ai_custom_model": self.edit_custom_model.text().strip(),
+            "theme": self._theme,
         })
         save_settings(self.settings)
-        QMessageBox.information(self, "Сохранено", "Настройки сохранены!")
+
+        # ✅ НЕТ перезапуска приложения — только инфо
+        c = get_colors(self._theme)
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Настройки сохранены")
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.setText("✅ Настройки успешно сохранены!")
+        msg.setStyleSheet(f"QMessageBox {{ background: {c['bg_card'] if 'bg_card' in c else c['bg_panel']}; color: {c['text']}; }}")
+        msg.exec()
 
     def get_settings(self) -> dict:
         return load_settings()
 
     # ── Стили ─────────────────────────────────────────────────────────────
-    @staticmethod
-    def _group_style():
-        return """
-            QGroupBox {
-                color: #c0c0c0; font-weight: bold;
-                border: 1px solid #2a2a2a; border-radius: 8px;
-                margin-top: 8px; padding-top: 14px;
-            }
-            QGroupBox::title { subcontrol-origin: margin; left: 12px; }
-        """
 
-    @staticmethod
-    def _btn_style():
-        return """
-            QPushButton {
-                background: #2a2a2a; color: #c0c0c0;
-                border: 1px solid #444; border-radius: 6px;
+    def _secondary_btn_style(self, c: dict) -> str:
+        return f"""
+            QPushButton {{
+                background: {c['bg_input']}; color: {c['text']};
+                border: 1px solid {c['border']}; border-radius: 6px;
                 padding: 6px 16px; font-size: 12px;
-            }
-            QPushButton:hover { background: #333; color: #fff; }
+            }}
+            QPushButton:hover {{ background: {c['bg_hover']}; color: {c['text']}; }}
         """
 
-    @staticmethod
-    def _link_btn_style():
-        return """
-            QPushButton {
-                background: transparent; color: #4a9eff;
-                border: 1px solid #4a9eff; border-radius: 6px;
+    def _link_btn_style(self, c: dict) -> str:
+        return f"""
+            QPushButton {{
+                background: transparent; color: {c['accent_blue']};
+                border: 1px solid {c['accent_blue']}; border-radius: 6px;
                 padding: 6px 14px; font-size: 12px;
-            }
-            QPushButton:hover { background: #1a2a3a; }
-        """
-
-    @staticmethod
-    def _icon_btn_style():
-        return """
-            QPushButton {
-                background: #2a2a2a; border: 1px solid #444;
-                border-radius: 6px; font-size: 14px;
-            }
-            QPushButton:hover { background: #3a3a3a; }
-            QPushButton:checked { background: #2a3a4a; }
+            }}
+            QPushButton:hover {{ background: {c['bg_selected']}; }}
         """

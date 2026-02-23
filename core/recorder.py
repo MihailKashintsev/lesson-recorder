@@ -25,18 +25,35 @@ def get_audio_path(lesson_id: int) -> Path:
     return AUDIO_DIR / f"lesson_{lesson_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.wav"
 
 
-class Recorder(QThread):
-    level_updated = pyqtSignal(float)   # audio level 0.0 – 1.0
-    error_occurred = pyqtSignal(str)
-    finished_recording = pyqtSignal(str)  # path to saved file
+def get_input_devices() -> list[dict]:
+    """Возвращает список входных аудиоустройств."""
+    devices = []
+    try:
+        device_list = sd.query_devices()
+        for i, dev in enumerate(device_list):
+            if dev.get("max_input_channels", 0) > 0:
+                devices.append({
+                    "index": i,
+                    "name": dev["name"],
+                    "channels": dev["max_input_channels"],
+                    "samplerate": int(dev["default_samplerate"]),
+                })
+    except Exception:
+        pass
+    return devices
 
-    def __init__(self, source: str, output_path: str):
+
+class Recorder(QThread):
+    level_updated = pyqtSignal(float)        # audio level 0.0 – 1.0
+    error_occurred = pyqtSignal(str)
+    finished_recording = pyqtSignal(str)     # path to saved file
+
+    def __init__(self, source: str, output_path: str, mic_device_index: int = None):
         super().__init__()
-        self.source = source        # "mic" | "system" | "both"
+        self.source = source                  # "mic" | "system" | "both"
         self.output_path = output_path
+        self.mic_device_index = mic_device_index  # None = default
         self._stop_event = threading.Event()
-        self._frames_mic = []
-        self._frames_sys = []
 
     def stop(self):
         self._stop_event.set()
@@ -55,8 +72,10 @@ class Recorder(QThread):
     # ── Microphone only (via sounddevice) ──────────────────────────────────
     def _record_mic_only(self):
         frames = []
-        with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS,
-                            dtype="int16", blocksize=CHUNK) as stream:
+        kwargs = dict(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype="int16", blocksize=CHUNK)
+        if self.mic_device_index is not None:
+            kwargs["device"] = self.mic_device_index
+        with sd.InputStream(**kwargs) as stream:
             while not self._stop_event.is_set():
                 data, _ = stream.read(CHUNK)
                 frames.append(data.copy())
@@ -80,7 +99,6 @@ class Recorder(QThread):
                 wasapi_info["defaultOutputDevice"]
             )
             if not default_speakers.get("isLoopbackDevice", False):
-                # find loopback variant
                 for i in range(pa.get_device_count()):
                     dev = pa.get_device_info_by_index(i)
                     if (dev.get("isLoopbackDevice", False) and
@@ -107,7 +125,6 @@ class Recorder(QThread):
             stream.stop_stream()
             stream.close()
 
-            # resample to 16kHz mono if needed
             audio = np.concatenate(frames)
             if default_speakers.get("maxInputChannels", 2) > 1:
                 audio = audio.reshape(-1, default_speakers["maxInputChannels"])
@@ -127,8 +144,10 @@ class Recorder(QThread):
         sys_done = threading.Event()
 
         def mic_thread():
-            with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS,
-                                dtype="int16", blocksize=CHUNK) as stream:
+            kwargs = dict(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype="int16", blocksize=CHUNK)
+            if self.mic_device_index is not None:
+                kwargs["device"] = self.mic_device_index
+            with sd.InputStream(**kwargs) as stream:
                 while not self._stop_event.is_set():
                     data, _ = stream.read(CHUNK)
                     mic_frames.append(data.copy())
@@ -183,18 +202,9 @@ class Recorder(QThread):
         t_mic.join()
         sys_done.wait(timeout=3)
 
-        # Mix
-        if mic_frames:
-            mic_audio = np.concatenate([f.flatten() for f in mic_frames])
-        else:
-            mic_audio = np.zeros(0, dtype=np.int16)
+        mic_audio = np.concatenate([f.flatten() for f in mic_frames]) if mic_frames else np.zeros(0, dtype=np.int16)
+        sys_audio = np.concatenate(sys_frames) if sys_frames else np.zeros(0, dtype=np.int16)
 
-        if sys_frames:
-            sys_audio = np.concatenate(sys_frames)
-        else:
-            sys_audio = np.zeros(0, dtype=np.int16)
-
-        # Align lengths
         length = max(len(mic_audio), len(sys_audio))
         if len(mic_audio) < length:
             mic_audio = np.pad(mic_audio, (0, length - len(mic_audio)))

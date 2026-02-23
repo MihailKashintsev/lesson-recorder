@@ -5,7 +5,8 @@ import traceback
 def main():
     try:
         from PyQt6.QtWidgets import QApplication, QMessageBox
-        from PyQt6.QtGui import QFont
+        from PyQt6.QtGui import QFont, QIcon
+        from PyQt6.QtCore import QTimer
     except ImportError:
         print("ОШИБКА: PyQt6 не установлен.")
         print("Выполни: pip install -r requirements.txt")
@@ -14,7 +15,7 @@ def main():
 
     app = QApplication(sys.argv)
 
-    # Глобальный перехват исключений — показываем диалог вместо вылета
+    # Глобальный перехват исключений
     def handle_exception(exc_type, exc_value, exc_tb):
         if issubclass(exc_type, KeyboardInterrupt):
             sys.__excepthook__(exc_type, exc_value, exc_tb)
@@ -49,7 +50,16 @@ def main():
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(__version__)
     app.setOrganizationName(APP_NAME)
-    app.setFont(QFont("Segoe UI", 10))
+
+    # Попытка загрузить иконку приложения
+    try:
+        import os
+        from pathlib import Path
+        icon_path = Path(__file__).parent / "app_icon.ico"
+        if icon_path.exists():
+            app.setWindowIcon(QIcon(str(icon_path)))
+    except Exception:
+        pass
 
     try:
         from ui.main_window import MainWindow
@@ -61,12 +71,16 @@ def main():
             f"Не удалось открыть главное окно:\n\n{e}\n\n{error_text}")
         sys.exit(1)
 
-    # Проверка обновлений в фоне
-    try:
-        from core.updater import check_for_updates_async
-        check_for_updates_async(parent=window)
-    except Exception:
-        pass  # обновлялка не критична
+    # ✅ ИСПРАВЛЕНО: Проверка обновлений через QTimer — только в главном потоке
+    # Раньше вызов из фонового потока мог открывать дополнительное окно
+    def _start_update_check():
+        try:
+            from core.updater import check_for_updates_async
+            check_for_updates_async(parent=window)
+        except Exception:
+            pass
+
+    QTimer.singleShot(3000, _start_update_check)  # через 3 секунды после запуска
 
     sys.exit(app.exec())
 

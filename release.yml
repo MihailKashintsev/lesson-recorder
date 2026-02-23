@@ -1,0 +1,77 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller packaging
+
+      - name: Read version
+        id: version
+        run: |
+          $ver = python -c "from version import __version__; print(__version__)"
+          echo "VERSION=$ver" >> $env:GITHUB_OUTPUT
+          echo "Version: $ver"
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller LessonRecorder.spec --clean --noconfirm
+
+      - name: Install Inno Setup
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build installer
+        run: iscc installer\setup.iss
+
+      - name: Find installer
+        id: installer
+        run: |
+          $file = Get-ChildItem -Path "dist\installer\*.exe" | Select-Object -First 1
+          echo "PATH=$($file.FullName)" >> $env:GITHUB_OUTPUT
+          echo "NAME=$($file.Name)" >> $env:GITHUB_OUTPUT
+          echo "Found: $($file.FullName)"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "LessonRecorder v${{ steps.version.outputs.VERSION }}"
+          body: |
+            ## LessonRecorder v${{ steps.version.outputs.VERSION }}
+
+            ### Установка
+            1. Скачайте `${{ steps.installer.outputs.NAME }}`
+            2. Запустите установщик
+            3. Готово — при следующем запуске приложение само предложит обновиться
+
+            ### Системные требования
+            - Windows 10/11 (64-bit)
+            - 4 GB RAM
+            - Интернет для AI конспектов (Groq / Gemini / OpenRouter — бесплатно)
+          files: ${{ steps.installer.outputs.PATH }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
