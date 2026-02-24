@@ -17,12 +17,16 @@ added_files = [
     ("core/transcribe_worker.py", "core"),
 ]
 
+# Иконка — добавляем в bundle чтобы main.py нашёл её через sys._MEIPASS
+if Path("app_icon.ico").exists():
+    added_files.append(("app_icon.ico", "."))
+
 # Добавляем ресурсы если есть
 for extra in ["resources", "assets", "tessdata"]:
     if Path(extra).exists():
         added_files.append((extra, extra))
 
-# Иконка
+# Иконка для EXE файла
 icon_path = "app_icon.ico" if Path("app_icon.ico").exists() else None
 
 a = Analysis(

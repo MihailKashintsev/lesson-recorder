@@ -244,7 +244,23 @@ def _autoinstall_qt(app, missing):
 
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _set_app_id():
+    """
+    Устанавливает Windows AppUserModelID — иконка на панели задач.
+    Без этого Windows группирует процесс под иконкой python.exe.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        app_id = "LessonRecorder.App.1"
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+    except Exception:
+        pass
+
+
 def main():
+    _set_app_id()          # ← ПЕРВЫМ делом, до QApplication
     missing = _missing_packages()
 
     try:
@@ -306,9 +322,18 @@ def main():
 
     try:
         from pathlib import Path
-        icon = Path(__file__).parent / "app_icon.ico"
-        if icon.exists():
-            app.setWindowIcon(QIcon(str(icon)))
+        # Ищем иконку в нескольких местах
+        candidates = [
+            Path(__file__).parent / "app_icon.ico",           # dev mode
+            Path(sys.executable).parent / "app_icon.ico",     # frozen: рядом с exe
+        ]
+        if getattr(sys, "_MEIPASS", None):
+            candidates.insert(0, Path(sys._MEIPASS) / "app_icon.ico")  # frozen: в bundle
+        for icon_path in candidates:
+            if icon_path.exists():
+                icon = QIcon(str(icon_path))
+                app.setWindowIcon(icon)
+                break
     except Exception:
         pass
 

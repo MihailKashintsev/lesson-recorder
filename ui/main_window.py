@@ -11,14 +11,16 @@ from PyQt6.QtCore import (
 from PyQt6.QtGui import QIcon, QFont, QColor
 
 from ui.recording_widget import RecordingWidget
-from ui.history_widget import HistoryWidget
-from ui.settings_widget import SettingsWidget, load_settings
-from ui.theme import get_colors, build_app_stylesheet
+from ui.history_widget    import HistoryWidget
+from ui.settings_widget   import SettingsWidget, load_settings
+from ui.about_widget      import AboutWidget
+from ui.theme             import get_colors, build_app_stylesheet
 
 NAV_ITEMS = [
-    ("REC", "⏺", "Запись",    0),
+    ("REC", "⏺",  "Запись",    0),
     ("HST", "📚", "История",   1),
     ("CFG", "⚙",  "Настройки", 2),
+    ("ABT", "ℹ",  "О проекте", 3),
 ]
 
 
@@ -34,7 +36,6 @@ class NavButton(QPushButton):
         self.toggled.connect(self._apply_style)
 
     def _apply_style(self, active: bool):
-        # Sidebar всегда тёмный
         if active:
             bg     = "rgba(88,166,255,0.15)"
             color  = "#e6edf3"
@@ -66,7 +67,6 @@ class NavButton(QPushButton):
         self.setText(f"{self._icon_str}\n{self._label_str}")
 
     def update_colors(self, _colors: dict):
-        # Sidebar фиксированно тёмный — перерисовываем без изменений
         self._apply_style(self.isChecked())
 
 
@@ -86,7 +86,6 @@ class FadeStackedWidget(QStackedWidget):
         if not next_w or not current:
             return
 
-        # Fade-in нового виджета
         effect = QGraphicsOpacityEffect(next_w)
         next_w.setGraphicsEffect(effect)
         anim = QPropertyAnimation(effect, b"opacity", self)
@@ -157,14 +156,33 @@ class MainWindow(QMainWindow):
         sb.addWidget(sep)
         sb.addSpacing(6)
 
+        # Nav buttons — основные вверху, «О проекте» внизу перед версией
         self._nav_buttons: list[NavButton] = []
-        for _code, icon, label, idx in NAV_ITEMS:
+        main_items  = [it for it in NAV_ITEMS if it[0] != "ABT"]
+        about_items = [it for it in NAV_ITEMS if it[0] == "ABT"]
+
+        for _code, icon, label, idx in main_items:
             btn = NavButton(icon, label)
             btn.clicked.connect(lambda _, i=idx: self._switch_page(i))
             sb.addWidget(btn)
             self._nav_buttons.append(btn)
 
         sb.addStretch()
+
+        # Тонкий разделитель перед «О проекте»
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.Shape.HLine)
+        sep2.setStyleSheet("color:#21262d; margin:0 8px;")
+        sb.addWidget(sep2)
+        sb.addSpacing(2)
+
+        for _code, icon, label, idx in about_items:
+            btn = NavButton(icon, label)
+            btn.clicked.connect(lambda _, i=idx: self._switch_page(i))
+            sb.addWidget(btn)
+            self._nav_buttons.append(btn)
+
+        sb.addSpacing(4)
 
         # Version
         try:
@@ -173,7 +191,7 @@ class MainWindow(QMainWindow):
             __version__ = "dev"
         ver = QLabel(f"v{__version__}")
         ver.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        ver.setStyleSheet("color:#484f58; font-size:10px; padding:10px 0;")
+        ver.setStyleSheet("color:#484f58; font-size:10px; padding:6px 0 10px 0;")
         sb.addWidget(ver)
 
         rl.addWidget(self.sidebar)
@@ -191,10 +209,12 @@ class MainWindow(QMainWindow):
         self.recording_widget = RecordingWidget()
         self.history_widget   = HistoryWidget()
         self.settings_widget  = SettingsWidget()
+        self.about_widget     = AboutWidget()
 
-        self.stack.addWidget(self.recording_widget)
-        self.stack.addWidget(self.history_widget)
-        self.stack.addWidget(self.settings_widget)
+        self.stack.addWidget(self.recording_widget)  # 0
+        self.stack.addWidget(self.history_widget)    # 1
+        self.stack.addWidget(self.settings_widget)   # 2
+        self.stack.addWidget(self.about_widget)      # 3
 
         rl.addWidget(self.stack)
 
@@ -216,8 +236,7 @@ class MainWindow(QMainWindow):
 
         self.setStyleSheet(build_app_stylesheet(theme))
 
-        # Sidebar всегда тёмный
-        sidebar_bg = "#010409" if theme == "dark" else "#1e2a3a"
+        sidebar_bg  = "#010409" if theme == "dark" else "#1e2a3a"
         sidebar_sep = "#30363d" if theme == "dark" else "#273549"
         self.sidebar.setStyleSheet(f"""
             QWidget#sidebar {{ background: {sidebar_bg}; }}
@@ -238,5 +257,6 @@ class MainWindow(QMainWindow):
             self.recording_widget.apply_theme(theme)
             self.history_widget.apply_theme(theme)
             self.settings_widget.apply_theme(theme)
+            self.about_widget.apply_theme(theme)
         except Exception:
             pass

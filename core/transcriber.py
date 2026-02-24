@@ -138,7 +138,17 @@ class Transcriber(QThread):
         try:
             cmd1 = _build_cmd(self.audio_path, self.model_size, lang)
         except RuntimeError as e:
-            self.error_occurred.emit(str(e))
+            msg = str(e)
+            # Добавляем конкретный совет если Python не найден
+            if "python" in msg.lower() or "Python" in msg:
+                msg = (
+                    "Python не найден.\n\n"
+                    "Решение: переустановите LessonRecorder — "
+                    "установщик автоматически скачает Python.\n\n"
+                    "Или установите Python 3.10+ с python.org "
+                    "и включите опцию 'Add Python to PATH'."
+                )
+            self.error_occurred.emit(msg)
             return
 
         # Попытка 1: с faster_whisper
