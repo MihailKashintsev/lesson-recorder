@@ -112,34 +112,158 @@ PACKAGES_INFO = [
 ]
 
 
-def _is_package_installed(import_name: str) -> bool:
-    """Проверка с инвалидацией кеша (нужно после pip install)."""
-    import importlib
-    import importlib.util
-    importlib.invalidate_caches()
-    root = import_name.split(".")[0]
-    return importlib.util.find_spec(root) is not None
+def _run_pip_show(pip_name: str) -> dict | None:
+    """
+    Запускает 'pip show <pip_name>' и возвращает dict с полями
+    {Name, Version, Location, ...} или None если пакет не найден.
+
+    Использует subprocess — единственный надёжный способ проверить
+    реальную pip-установку. importlib.util.find_spec НЕ используем:
+    в замороженном .exe он находит пакеты внутри _internal (PyInstaller-бандл)
+    и говорит «установлен», хотя pip их не ставил отдельно.
+    """
+    import subprocess
+    try:
+        from core.python_path import find_python_exe
+        python = find_python_exe()
+    except Exception:
+        python = sys.executable
+
+    flags = 0
+    if sys.platform == "win32":
+        try: flags = subprocess.CREATE_NO_WINDOW
+        except AttributeError: pass
+
+    try:
+        r = subprocess.run(
+            [python, "-m", "pip", "show", pip_name],
+            capture_output=True, text=True, timeout=15,
+            creationflags=flags,
+        )
+        if r.returncode != 0:
+            return None
+        info = {}
+        for line in r.stdout.splitlines():
+            if ":" in line:
+                k, _, v = line.partition(":")
+                info[k.strip()] = v.strip()
+        return info if info else None
+    except Exception:
+        return None
 
 
-def _get_package_path(import_name: str) -> str:
-    """Возвращает путь к пакету или пустую строку если не установлен."""
-    import importlib
-    import importlib.util
-    importlib.invalidate_caches()
-    root = import_name.split(".")[0]
-    spec = importlib.util.find_spec(root)
-    if spec is None:
+# Кеш результатов pip show (сбрасывается после install/uninstall)
+_pip_show_cache: dict[str, dict | None] = {}
+
+
+def _pkg_info(pip_name: str, force_refresh: bool = False) -> dict | None:
+    """Возвращает pip show результат с кешированием."""
+    if force_refresh or pip_name not in _pip_show_cache:
+        _pip_show_cache[pip_name] = _run_pip_show(pip_name)
+    return _pip_show_cache.get(pip_name)
+
+
+def _is_package_installed(pip_name: str, import_name: str = "") -> bool:
+    """True если пакет реально установлен через pip (не из _internal бандла)."""
+    info = _pkg_info(pip_name)
+    if info is None:
+        return False
+    # Проверяем что путь установки НЕ внутри PyInstaller _internal
+    location = info.get("Location", "")
+    if "_internal" in location.replace("\\", "/"):
+        return False
+    return True
+
+
+def _get_package_path(pip_name: str) -> str:
+    """Возвращает реальный путь установки пакета или ''."""
+    info = _pkg_info(pip_name)
+    if not info:
         return ""
-    # Предпочитаем папку пакета, а не __init__.py
-    if spec.submodule_search_locations:
-        try:
-            return str(list(spec.submodule_search_locations)[0])
-        except Exception:
-            pass
-    if spec.origin:
+    location = info.get("Location", "")
+    if "_internal" in location.replace("\\", "/"):
+        return ""   # Это бандл, не реальная установка
+    name = info.get("Name", pip_name)
+    # Строим путь к папке пакета внутри site-packages
+    if location:
         from pathlib import Path
-        return str(Path(spec.origin).parent)
+        # Пробуем найти реальную папку пакета
+        folder_name = name.lower().replace("-", "_")
+        for variant in [folder_name, name, name.lower()]:
+            p = Path(location) / variant
+            if p.exists():
+                return str(p)
+        return location  # Хотя бы site-packages
     return ""
+
+
+class PkgCheckThread(QThread):
+    """Проверяет установку всех пакетов через 'pip show' параллельно."""
+    pkg_checked = pyqtSignal(str, bool, str)  # (pip_name, installed, path)
+
+    def __init__(self, pip_names: list[str]):
+        super().__init__()
+        self.pip_names = pip_names
+
+    def run(self):
+        import subprocess
+        try:
+            from core.python_path import find_python_exe
+            python = find_python_exe()
+        except Exception:
+            python = sys.executable
+
+        flags = 0
+        if sys.platform == "win32":
+            try: flags = subprocess.CREATE_NO_WINDOW
+            except AttributeError: pass
+
+        for pip_name in self.pip_names:
+            try:
+                r = subprocess.run(
+                    [python, "-m", "pip", "show", pip_name],
+                    capture_output=True, text=True, timeout=15,
+                    creationflags=flags,
+                )
+                if r.returncode != 0:
+                    _pip_show_cache[pip_name] = None
+                    self.pkg_checked.emit(pip_name, False, "")
+                    continue
+
+                info = {}
+                for line in r.stdout.splitlines():
+                    if ":" in line:
+                        k, _, v = line.partition(":")
+                        info[k.strip()] = v.strip()
+
+                _pip_show_cache[pip_name] = info
+                location = info.get("Location", "")
+
+                # Пакет внутри PyInstaller _internal — не считаем реально установленным
+                if "_internal" in location.replace("\\", "/"):
+                    self.pkg_checked.emit(pip_name, False, "")
+                    continue
+
+                # Ищем папку пакета
+                from pathlib import Path
+                folder_name = (info.get("Name", pip_name)
+                               .lower().replace("-", "_"))
+                pkg_path = ""
+                for variant in [folder_name,
+                                 info.get("Name", pip_name),
+                                 pip_name.lower().replace("-", "_")]:
+                    p = Path(location) / variant
+                    if p.exists():
+                        pkg_path = str(p)
+                        break
+                if not pkg_path and location:
+                    pkg_path = location
+
+                self.pkg_checked.emit(pip_name, True, pkg_path)
+
+            except Exception:
+                _pip_show_cache[pip_name] = None
+                self.pkg_checked.emit(pip_name, False, "")
 
 
 class PipThread(QThread):
@@ -228,6 +352,7 @@ class SettingsWidget(QWidget):
         self._pkg_rows:    dict[str, dict]       = {}
         self._pkg_container    = None
         self._pkg_vbox         = None
+        self._pkg_check_thread = None
         self._build_ui()
 
     def apply_theme(self, theme: str):
@@ -838,7 +963,7 @@ class SettingsWidget(QWidget):
         return group
 
     def _fill_pkg_rows(self, c: dict | None = None):
-        """Заполняет/перезаполняет строки пакетов."""
+        """Заполняет строки. Проверка установки идёт в фоне через PkgCheckThread."""
         if c is None:
             c = get_colors(self._theme)
 
@@ -847,17 +972,79 @@ class SettingsWidget(QWidget):
             item = self._pkg_vbox.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-
         self._pkg_rows.clear()
 
+        # Сначала рисуем все строки с "🔍 проверяю…"
         for pkg in PACKAGES_INFO:
-            row_w = self._build_pkg_row(pkg, c)
+            row_w = self._build_pkg_row(pkg, c, checking=True)
             self._pkg_vbox.addWidget(row_w)
 
-    def _build_pkg_row(self, pkg: dict, c: dict) -> QWidget:
+        # Запускаем фоновую проверку
+        self._start_pkg_check()
+
+    def _start_pkg_check(self):
+        """Запускает PkgCheckThread для всех пакетов параллельно."""
+        _pip_show_cache.clear()
+        t = PkgCheckThread([p["pip_name"] for p in PACKAGES_INFO])
+        t.pkg_checked.connect(self._on_pkg_checked)
+        t.start()
+        self._pkg_check_thread = t  # сохраняем чтобы не был GC-собран
+
+    def _on_pkg_checked(self, pip_name: str, installed: bool, pkg_path: str):
+        """Вызывается из фона для каждого пакета после pip show."""
+        row = self._pkg_rows.get(pip_name)
+        if not row:
+            return
+        c = get_colors(self._theme)
+
+        row["installed"] = installed
+        row["status_lbl"].setText("✅" if installed else "❌")
+
+        # Путь
+        path_lbl = row.get("path_lbl")
+        if path_lbl:
+            if installed and pkg_path:
+                short = pkg_path if len(pkg_path) < 55 else "…" + pkg_path[-52:]
+                path_lbl.setText(short)
+                path_lbl.setToolTip(pkg_path)
+                path_lbl.setStyleSheet(
+                    f"color:{c['accent_blue']};font-size:10px;text-decoration:underline;")
+                path_lbl.mousePressEvent = lambda e, p=pkg_path: self._open_folder(p)
+            elif installed:
+                path_lbl.setText("(путь не найден)")
+                path_lbl.setStyleSheet(f"color:{c['text_muted']};font-size:10px;")
+            else:
+                path_lbl.setText("не установлен")
+                path_lbl.setStyleSheet("color:#f44336;font-size:10px;")
+
+        # Кнопка
+        btn = row.get("btn")
+        if btn:
+            btn.setEnabled(True)
+            try: btn.clicked.disconnect()
+            except Exception: pass
+            if installed:
+                btn.setText("🗑 Удалить")
+                btn.setStyleSheet(
+                    "QPushButton{background:#3a1a1a;color:#f44336;border:none;"
+                    "border-radius:5px;font-size:11px;padding:0 10px;}"
+                    "QPushButton:hover{background:#5a2020;}"
+                    "QPushButton:disabled{background:#1a1a1a;color:#555;}")
+                btn.clicked.connect(lambda checked, pn=pip_name: self._uninstall_by_name(pn))
+            else:
+                btn.setText("⬇ Установить")
+                btn.setStyleSheet(
+                    f"QPushButton{{background:{c['accent_blue']};color:#fff;border:none;"
+                    f"border-radius:5px;font-size:11px;padding:0 10px;}}"
+                    f"QPushButton:hover{{background:{c['accent_blue']}cc;}}"
+                    f"QPushButton:disabled{{background:#1a2a3a;color:#555;}}")
+                btn.clicked.connect(lambda checked, pn=pip_name: self._install_by_name(pn))
+
+    def _build_pkg_row(self, pkg: dict, c: dict, checking: bool = False) -> QWidget:
         pip_name  = pkg["pip_name"]
-        installed = _is_package_installed(pkg["import_name"])
-        pkg_path  = _get_package_path(pkg["import_name"]) if installed else ""
+        # При checking=True статус пока неизвестен — покажем 🔍
+        installed = False
+        pkg_path  = ""
 
         row_w = QWidget()
         row_w.setStyleSheet("background:transparent;")
@@ -874,8 +1061,8 @@ class SettingsWidget(QWidget):
         hl.setContentsMargins(0, 0, 0, 0)
         hl.setSpacing(8)
 
-        # Статус
-        status_lbl = QLabel("✅" if installed else "❌")
+        # Статус — 🔍 пока идёт проверка
+        status_lbl = QLabel("🔍")
         status_lbl.setFixedWidth(22)
         status_lbl.setStyleSheet("font-size:13px;")
         hl.addWidget(status_lbl)
@@ -935,24 +1122,15 @@ class SettingsWidget(QWidget):
         action_lbl.setStyleSheet(f"color:{c['text_muted']};font-size:11px;min-width:70px;")
         hl.addWidget(action_lbl)
 
-        # Кнопка установки/удаления
-        btn = QPushButton()
+        # Кнопка — disabled пока идёт проверка
+        btn = QPushButton("🔍")
         btn.setFixedHeight(26)
         btn.setMinimumWidth(90)
-        if installed:
-            btn.setText("🗑 Удалить")
-            btn.setStyleSheet(
-                "QPushButton{background:#3a1a1a;color:#f44336;border:none;"
-                "border-radius:5px;font-size:11px;padding:0 10px;}"
-                "QPushButton:hover{background:#5a2020;}"
-                "QPushButton:disabled{background:#1a1a1a;color:#555;}")
-        else:
-            btn.setText("⬇ Установить")
-            btn.setStyleSheet(
-                f"QPushButton{{background:{c['accent_blue']};color:#fff;border:none;"
-                f"border-radius:5px;font-size:11px;padding:0 10px;}}"
-                f"QPushButton:hover{{background:{c['accent_blue']}cc;}}"
-                f"QPushButton:disabled{{background:#1a2a3a;color:#555;}}")
+        btn.setEnabled(False)
+        btn.setStyleSheet(
+            f"QPushButton{{background:{c['bg_input']};color:{c['text_muted']};"
+            f"border:1px solid {c['border']};border-radius:5px;font-size:11px;padding:0 10px;}}"
+            f"QPushButton:disabled{{background:{c['bg_input']};color:{c['text_muted']};}}")
         hl.addWidget(btn)
 
         outer.addWidget(main_row)
@@ -965,21 +1143,9 @@ class SettingsWidget(QWidget):
         desc_lbl.setStyleSheet(f"color:{c['text_muted']};font-size:11px;")
         desc_row.addWidget(desc_lbl)
 
-        # Путь к пакету (кликабельный)
-        path_lbl = QLabel()
-        path_lbl.setStyleSheet(
-            f"color:{c['accent_blue']};font-size:10px;"
-            "text-decoration:underline;")
-        path_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
-
-        if installed and pkg_path:
-            short = pkg_path if len(pkg_path) < 55 else "…" + pkg_path[-52:]
-            path_lbl.setText(short)
-            path_lbl.setToolTip(pkg_path)
-            path_lbl.mousePressEvent = lambda e, p=pkg_path: self._open_folder(p)
-        elif installed:
-            path_lbl.setText("(путь неизвестен)")
-            path_lbl.setStyleSheet(f"color:{c['text_muted']};font-size:10px;")
+        # Путь к пакету (заполняется после проверки)
+        path_lbl = QLabel("🔍 проверяю…")
+        path_lbl.setStyleSheet(f"color:{c['text_muted']};font-size:10px;")
 
         desc_row.addWidget(path_lbl)
         desc_row.addStretch()
@@ -1030,7 +1196,7 @@ class SettingsWidget(QWidget):
 
     def _install_missing(self):
         for pkg in PACKAGES_INFO:
-            if not _is_package_installed(pkg["import_name"]):
+            if not _is_package_installed(pkg["pip_name"], pkg["import_name"]):
                 self._install_by_name(pkg["pip_name"])
 
     def _install_by_name(self, pip_name: str):
@@ -1080,66 +1246,40 @@ class SettingsWidget(QWidget):
             return
 
         c   = get_colors(self._theme)
-        pkg = row["pkg"]
 
         if not success:
             row["btn"].setEnabled(True)
             row["btn"].setText("🗑 Удалить" if row.get("installed") else "⬇ Установить")
             row["action_lbl"].setText("❌ Ошибка")
             row["action_lbl"].setToolTip(output[:300])
-            # Показываем диалог с полным выводом pip
             self._show_pip_log(pip_name, success=False, output=output)
             return
 
-        # Успех
-        action   = row.get("_action", "install")
-        now_inst = (action == "install")
-        row["installed"] = now_inst
+        # Успех — сбрасываем кеш и перепроверяем этот пакет через pip show
+        _pip_show_cache.pop(pip_name, None)
+        row["action_lbl"].setText("🔍 проверяю…")
+        row["status_lbl"].setText("🔍")
+        row["btn"].setEnabled(False)
+        row["btn"].setText("🔍")
 
-        row["status_lbl"].setText("✅" if now_inst else "❌")
-        row["action_lbl"].setText("✅ Готово")
-
-        # Обновляем путь
         if "path_lbl" in row:
-            if now_inst:
-                pkg_path = _get_package_path(pkg["import_name"])
-                if pkg_path:
-                    short = pkg_path if len(pkg_path) < 55 else "…" + pkg_path[-52:]
-                    row["path_lbl"].setText(short)
-                    row["path_lbl"].setToolTip(pkg_path)
-                    row["path_lbl"].setStyleSheet(
-                        f"color:{c['accent_blue']};font-size:10px;text-decoration:underline;")
-                    row["path_lbl"].mousePressEvent = (
-                        lambda e, p=pkg_path: self._open_folder(p))
-            else:
-                row["path_lbl"].setText("")
-                row["path_lbl"].mousePressEvent = lambda e: None
+            row["path_lbl"].setText("🔍 проверяю…")
+            row["path_lbl"].setStyleSheet(f"color:{c['text_muted']};font-size:10px;")
 
-        # Меняем кнопку
-        btn = row["btn"]
-        btn.setEnabled(True)
-        try: btn.clicked.disconnect()
-        except Exception: pass
+        # Перепроверяем только этот пакет
+        t = PkgCheckThread([pip_name])
+        t.pkg_checked.connect(self._on_pkg_checked)
+        t.pkg_checked.connect(lambda pn, inst, path: self._after_recheck(pn))
+        t.start()
+        self._pip_threads[f"__recheck_{pip_name}"] = t  # держим ссылку
 
-        if now_inst:
-            btn.setText("🗑 Удалить")
-            btn.setStyleSheet(
-                "QPushButton{background:#3a1a1a;color:#f44336;border:none;"
-                "border-radius:5px;font-size:11px;padding:0 10px;}"
-                "QPushButton:hover{background:#5a2020;}"
-                "QPushButton:disabled{background:#1a1a1a;color:#555;}")
-            btn.clicked.connect(lambda checked, pn=pip_name: self._uninstall_by_name(pn))
-        else:
-            btn.setText("⬇ Установить")
-            btn.setStyleSheet(
-                f"QPushButton{{background:{c['accent_blue']};color:#fff;border:none;"
-                f"border-radius:5px;font-size:11px;padding:0 10px;}}"
-                f"QPushButton:hover{{background:{c['accent_blue']}cc;}}"
-                f"QPushButton:disabled{{background:#1a2a3a;color:#555;}}")
-            btn.clicked.connect(lambda checked, pn=pip_name: self._install_by_name(pn))
-
-        btn.repaint()
-        row["status_lbl"].repaint()
+    def _after_recheck(self, pip_name: str):
+        """После перепроверки показываем ✅ Готово."""
+        row = self._pkg_rows.get(pip_name)
+        if row:
+            row["action_lbl"].setText("✅ Готово")
+        # Убираем временную ссылку
+        self._pip_threads.pop(f"__recheck_{pip_name}", None)
 
     def _show_pip_log(self, pip_name: str, success: bool, output: str):
         """Показывает диалог с полным выводом pip."""
