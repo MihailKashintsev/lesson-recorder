@@ -1,212 +1,152 @@
 """
-Отдельный процесс для транскрипции — полностью изолирован от Qt.
-Запускается как subprocess, общается через stdout JSON-строками.
+transcribe_worker.py
 
-Ключевые исправления:
-  - CT2_FORCE_CPU_ISA=SSE2 ДО любого импорта ctranslate2/faster_whisper
-    (нативный краш 0xC0000409 не ловится try/except — только env var)
-  - Аудио читается в Python через wave+numpy, без FFmpeg subprocess
-  - Fallback: если faster_whisper падает — пробуем openai-whisper
+Запускается как ОТДЕЛЬНЫЙ SUBPROCESS — изолирован от Qt.
+Если ctranslate2/faster_whisper нативно крашит процесс,
+умирает только этот воркер, а не главное приложение.
+
+Вызов:
+  python transcribe_worker.py <audio_path> <model_size> <language>
+  LessonRecorder.exe --transcribe-worker <audio_path> <model_size> <language>
 """
 import sys
 import os
 import json
 import wave
 
-# ══════════════════════════════════════════════════════════════════════════════
-# КРИТИЧНО: установить ДО любого import ctranslate2 / faster_whisper
-# Без этого ctranslate2 пытается использовать AVX2 и убивает процесс
-# с кодом 0xC0000409 (STATUS_STACK_BUFFER_OVERRUN) до того как Python
-# успевает поймать исключение.
-# ══════════════════════════════════════════════════════════════════════════════
-os.environ.setdefault("CT2_FORCE_CPU_ISA", "SSE2")
-os.environ.setdefault("OMP_NUM_THREADS", "2")       # не занимать все ядра
+# КРИТИЧНО: установить ДО любого импорта ctranslate2/faster_whisper
+# (работает только если установить до загрузки DLL)
+os.environ["CT2_FORCE_CPU_ISA"] = "SSE2"
+os.environ.setdefault("OMP_NUM_THREADS", "2")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "2")
 
 
-def emit(msg_type: str, text: str):
-    print(json.dumps({"type": msg_type, "text": text}), flush=True)
+def emit(t: str, text: str):
+    print(json.dumps({"type": t, "text": text}), flush=True)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Чтение WAV без FFmpeg
-# ──────────────────────────────────────────────────────────────────────────────
-
-def read_wav_as_float32(path: str):
-    """
-    Читает WAV → numpy float32 массив, моно, 16000 Гц.
-    Не вызывает FFmpeg — исключает дополнительные нативные крашы.
-    """
+def read_wav(path: str):
     import numpy as np
-
     with wave.open(path, "rb") as wf:
-        n_ch      = wf.getnchannels()
-        sampwidth = wf.getsampwidth()
-        framerate = wf.getframerate()
-        n_frames  = wf.getnframes()
-        raw       = wf.readframes(n_frames)
+        n_ch = wf.getnchannels()
+        sw   = wf.getsampwidth()
+        rate = wf.getframerate()
+        raw  = wf.readframes(wf.getnframes())
 
-    # Декодируем байты → float32
-    if sampwidth == 2:
+    if sw == 2:
         pcm = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-    elif sampwidth == 4:
+    elif sw == 4:
         pcm = np.frombuffer(raw, dtype=np.int32).astype(np.float32) / 2147483648.0
-    elif sampwidth == 1:
-        pcm = (np.frombuffer(raw, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
     else:
-        raise ValueError(f"Неподдерживаемый sampwidth={sampwidth}")
+        pcm = (np.frombuffer(raw, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
 
-    # Стерео → моно
     if n_ch > 1:
-        remainder = len(pcm) % n_ch
-        if remainder:
-            pcm = pcm[:-remainder]
+        rem = len(pcm) % n_ch
+        if rem: pcm = pcm[:-rem]
         pcm = pcm.reshape(-1, n_ch).mean(axis=1).astype(np.float32)
 
-    # Ресемплинг → 16000 Гц
-    if framerate != 16000:
-        emit("progress", f"Ресемплинг {framerate}→16000 Гц…")
+    if rate != 16000:
         try:
             from scipy.signal import resample_poly
             from math import gcd
-            g   = gcd(16000, framerate)
-            pcm = resample_poly(pcm, 16000 // g, framerate // g).astype(np.float32)
+            g = gcd(16000, rate)
+            pcm = resample_poly(pcm, 16000 // g, rate // g).astype(np.float32)
         except ImportError:
-            # scipy нет — линейная интерполяция
-            import numpy as np
-            target = int(len(pcm) * 16000 / framerate)
-            pcm    = np.interp(
-                np.linspace(0, len(pcm) - 1, target),
-                np.arange(len(pcm)),
-                pcm,
-            ).astype(np.float32)
-
-    emit("progress", f"Аудио: {len(pcm)/16000:.1f} сек, {n_ch} кан., {framerate} Гц")
-    return pcm
+            import numpy as np2
+            tgt = int(len(pcm) * 16000 / rate)
+            pcm = np2.interp(np2.linspace(0, len(pcm)-1, tgt),
+                             np2.arange(len(pcm)), pcm).astype(np.float32)
+    return pcm, rate
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# faster_whisper
-# ──────────────────────────────────────────────────────────────────────────────
+def run(audio_path: str, model_size: str, language: str | None):
+    emit("progress", f"Читаю аудио ({os.path.getsize(audio_path)//1024} КБ)…")
 
-def run_faster_whisper(audio, model_size: str, language: str | None) -> str:
-    # CT2_FORCE_CPU_ISA уже установлен выше — до этого импорта
-    from faster_whisper import WhisperModel
+    try:
+        pcm, rate = read_wav(audio_path)
+    except Exception as e:
+        emit("error", f"Не могу прочитать WAV: {e}")
+        return
 
-    emit("progress", f"Загружаю faster_whisper [{model_size}] (float32)…")
-    # float32 — безопасный тип без AVX2; int8 требует AVX2
-    model = WhisperModel(model_size, device="cpu", compute_type="float32")
+    emit("progress", f"Аудио: {len(pcm)/16000:.1f} сек (SR={rate})")
 
-    emit("progress", "Распознаю речь…")
-    segments, info = model.transcribe(
-        audio,
-        language=language,
-        beam_size=5,
-        best_of=5,
-        temperature=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
-        vad_filter=True,
-        vad_parameters={"min_silence_duration_ms": 300},
-        condition_on_previous_text=False,
-    )
+    if len(pcm) < 1600:
+        emit("error", "Запись слишком короткая (< 0.1 сек)")
+        return
 
-    emit("progress", f"Язык: {info.language} ({info.language_probability:.0%})")
+    # ── faster_whisper ────────────────────────────────────────────────────
+    faster_err = ""
+    try:
+        from faster_whisper import WhisperModel
+        emit("progress", f"Загружаю faster-whisper [{model_size}] (float32)…")
+        model = WhisperModel(model_size, device="cpu", compute_type="float32",
+                             cpu_threads=2, num_workers=1)
+        emit("progress", "Распознаю речь…")
+        segments, info = model.transcribe(
+            pcm, language=language, beam_size=5, best_of=5,
+            temperature=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
+            vad_filter=True,
+            vad_parameters={"min_silence_duration_ms": 300},
+            condition_on_previous_text=False,
+        )
+        emit("progress", f"Язык: {info.language} ({info.language_probability:.0%})")
+        parts = []
+        for seg in segments:
+            t = seg.text.strip()
+            if t:
+                parts.append(t)
+                emit("progress", f"[{seg.start:.1f}s] {t}")
+        emit("done", " ".join(parts).strip())
+        return
+    except ImportError:
+        faster_err = "faster-whisper не установлен"
+        emit("progress", faster_err)
+    except Exception as e:
+        faster_err = str(e)
+        emit("progress", f"faster-whisper ошибка: {str(e)[:120]}")
 
-    parts = []
-    for seg in segments:
-        t = seg.text.strip()
-        if t:
-            parts.append(t)
-            emit("progress", f"[{seg.start:.1f}s] {t}")
+    # ── openai-whisper fallback ───────────────────────────────────────────
+    try:
+        import whisper
+        emit("progress", f"Загружаю openai-whisper [{model_size}]…")
+        model = whisper.load_model(model_size, device="cpu")
+        opts = {"fp16": False, "beam_size": 5}
+        if language:
+            opts["language"] = language
+        result = model.transcribe(pcm, **opts)
+        emit("done", (result.get("text") or "").strip())
+    except ImportError:
+        emit("error",
+             "Модуль транскрипции не найден.\n"
+             "Открой Настройки → Пакеты и установи faster-whisper.\n"
+             f"[faster_whisper: {faster_err}]")
+    except Exception as e:
+        emit("error", f"faster-whisper: {faster_err}\nopenai-whisper: {e}")
 
-    return " ".join(parts).strip()
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# openai-whisper (fallback)
-# ──────────────────────────────────────────────────────────────────────────────
-
-def run_openai_whisper(audio, model_size: str, language: str | None) -> str:
-    import whisper
-
-    emit("progress", f"Загружаю openai-whisper [{model_size}]…")
-    model = whisper.load_model(model_size, device="cpu")
-
-    emit("progress", "Распознаю речь (openai-whisper)…")
-    opts = {"fp16": False, "beam_size": 5, "best_of": 5}
-    if language:
-        opts["language"] = language
-
-    result = model.transcribe(audio, **opts)
-    return (result.get("text") or "").strip()
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# main
-# ──────────────────────────────────────────────────────────────────────────────
 
 def main():
-    if len(sys.argv) < 3:
-        emit("error", "Usage: transcribe_worker.py <audio_path> <model_size> [language]")
+    # Поддерживаем два варианта вызова:
+    #   python transcribe_worker.py <path> <model> <lang>
+    #   LessonRecorder.exe --transcribe-worker <path> <model> <lang>
+    args = sys.argv[1:]
+    if args and args[0] == "--transcribe-worker":
+        args = args[1:]
+
+    if len(args) < 2:
+        emit("error", "Usage: transcribe_worker.py <audio> <model> [lang]")
         sys.exit(1)
 
-    audio_path = sys.argv[1]
-    model_size = sys.argv[2]
-    language   = sys.argv[3] if len(sys.argv) > 3 else None
-    if language in ("auto", "", None, "None"):
+    audio_path = args[0]
+    model_size = args[1]
+    language   = args[2] if len(args) > 2 else None
+    if language in ("auto", "", "None", None):
         language = None
 
-    # Проверяем файл
     if not os.path.exists(audio_path):
         emit("error", f"Файл не найден: {audio_path}")
         sys.exit(1)
 
-    size_kb = os.path.getsize(audio_path) // 1024
-    emit("progress", f"Аудио файл: {size_kb} КБ")
-
-    if size_kb < 2:
-        emit("error", "Файл слишком мал (< 2 КБ) — запись пустая или не сохранилась")
-        sys.exit(1)
-
-    # Читаем аудио
-    try:
-        audio = read_wav_as_float32(audio_path)
-    except Exception as e:
-        emit("error", f"Не могу прочитать WAV файл: {e}")
-        sys.exit(1)
-
-    # Пробуем faster_whisper
-    text = ""
-    faster_error = ""
-    try:
-        import faster_whisper  # noqa — просто проверяем что установлен
-        text = run_faster_whisper(audio, model_size, language)
-    except ImportError:
-        faster_error = "faster_whisper не установлен"
-        emit("progress", f"{faster_error} — пробую openai-whisper…")
-    except Exception as e:
-        faster_error = str(e)
-        emit("progress", f"faster_whisper ошибка: {faster_error[:120]} — пробую openai-whisper…")
-
-    # Fallback: openai-whisper
-    if not text and faster_error:
-        try:
-            import whisper  # noqa
-            text = run_openai_whisper(audio, model_size, language)
-        except ImportError:
-            emit("error",
-                 "Нет ни faster_whisper, ни openai-whisper.\n"
-                 "В настройках → Пакеты → установи Whisper.")
-            sys.exit(1)
-        except Exception as e2:
-            emit("error",
-                 f"Оба движка недоступны.\n"
-                 f"faster_whisper: {faster_error}\n"
-                 f"openai-whisper: {e2}")
-            sys.exit(1)
-
-    if not text:
-        emit("progress", "⚠️ Текст не распознан — тишина или слишком тихо")
-
-    emit("done", text)
+    run(audio_path, model_size, language)
 
 
 if __name__ == "__main__":

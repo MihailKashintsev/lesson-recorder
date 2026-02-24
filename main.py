@@ -5,6 +5,18 @@ import traceback
 # Устанавливаем ДО любого импорта ctranslate2/faster_whisper
 os.environ["CT2_FORCE_CPU_ISA"] = "SSE2"
 os.environ.setdefault("OMP_NUM_THREADS", "2")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "2")
+
+# ── Режим воркера транскрипции ────────────────────────────────────────────────
+# Когда frozen .exe вызывается с флагом --transcribe-worker,
+# работаем как subprocess-воркер без GUI.
+if "--transcribe-worker" in sys.argv:
+    idx = sys.argv.index("--transcribe-worker")
+    # Убираем флаг, передаём остальные аргументы воркеру
+    sys.argv = [sys.argv[0]] + sys.argv[idx + 1:]
+    from core.transcribe_worker import main as _worker_main
+    _worker_main()
+    sys.exit(0)
 
 
 # ── Обязательные пакеты ───────────────────────────────────────────────────────
