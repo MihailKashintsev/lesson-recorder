@@ -942,8 +942,9 @@ class SettingsWidget(QWidget):
 
         # Кнопка "установить всё"
         hdr = QHBoxLayout()
-        hdr.addWidget(QLabel("Пакет",
-            styleSheet=f"color:{c['text_muted']};font-size:11px;font-weight:600;"))
+        lbl_pkg = QLabel("Пакет")
+        lbl_pkg.setStyleSheet(f"color:{c['text_muted']};font-size:11px;font-weight:600;")
+        hdr.addWidget(lbl_pkg)
         hdr.addStretch()
         btn_all = QPushButton("⬇  Установить всё отсутствующее")
         btn_all.setFixedHeight(26)
@@ -960,6 +961,13 @@ class SettingsWidget(QWidget):
         sep.setStyleSheet(f"color:{c['border']};")
         outer.addWidget(sep)
 
+        # ── Строка Tesseract OCR (не pip-пакет, отдельный установщик) ────
+        outer.addWidget(self._build_tesseract_row(c))
+
+        sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
+        sep2.setStyleSheet(f"color:{c['border']};")
+        outer.addWidget(sep2)
+
         # Контейнер для строк — сохраняем ссылку чтобы перестраивать
         self._pkg_container = QWidget()
         self._pkg_container.setStyleSheet("background:transparent;")
@@ -970,6 +978,164 @@ class SettingsWidget(QWidget):
 
         self._fill_pkg_rows(c)
         return group
+
+    def _build_tesseract_row(self, c: dict) -> QWidget:
+        """Строка Tesseract OCR — проверяется через shutil.which + реестр, не pip."""
+        from core.tesseract_langs import find_tesseract_cmd
+
+        row_w = QWidget(); row_w.setStyleSheet("background:transparent;")
+        outer = QVBoxLayout(row_w)
+        outer.setContentsMargins(0, 4, 0, 4)
+        outer.setSpacing(2)
+
+        main_row = QWidget(); main_row.setStyleSheet("background:transparent;")
+        hl = QHBoxLayout(main_row)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.setSpacing(8)
+
+        tess_path = find_tesseract_cmd()
+        installed = bool(tess_path)
+
+        status_lbl = QLabel("✅" if installed else "❌")
+        status_lbl.setFixedWidth(22)
+        status_lbl.setStyleSheet("font-size:13px;")
+        hl.addWidget(status_lbl)
+        self._tess_status_lbl = status_lbl
+
+        name_row = QHBoxLayout(); name_row.setSpacing(6)
+        name_lbl = QLabel("Tesseract OCR")
+        name_lbl.setStyleSheet(f"color:{c['text']};font-size:12px;font-weight:600;")
+        name_row.addWidget(name_lbl)
+        badge = QLabel("📷 OCR-движок")
+        badge.setStyleSheet(f"color:{c['accent_blue']};font-size:10px;")
+        name_row.addWidget(badge)
+        name_row.addStretch()
+        nw = QWidget(); nw.setStyleSheet("background:transparent;"); nw.setLayout(name_row)
+        hl.addWidget(nw, stretch=1)
+
+        def _small_btn(icon: str, tip: str) -> QPushButton:
+            b = QPushButton(icon)
+            b.setFixedSize(26, 26)
+            b.setToolTip(tip)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setStyleSheet(
+                f"QPushButton{{background:{c['bg_input']};color:{c['text_muted']};"
+                f"border:1px solid {c['border']};border-radius:5px;font-size:12px;padding:0;}}"
+                f"QPushButton:hover{{background:{c['bg_hover']};color:{c['text']};}}")
+            return b
+
+        btn_copy = _small_btn("⌨", "Скопировать команду установки")
+        btn_copy.clicked.connect(lambda: self._copy_pip_cmd(
+            "winget install UB-Mannheim.TesseractOCR  # или скачай с github.com/UB-Mannheim/tesseract/wiki"))
+        hl.addWidget(btn_copy)
+
+        btn_gh = _small_btn("🐙", "Открыть GitHub Tesseract")
+        btn_gh.clicked.connect(lambda: __import__("webbrowser").open(
+            "https://github.com/UB-Mannheim/tesseract/wiki"))
+        hl.addWidget(btn_gh)
+
+        action_lbl = QLabel("")
+        action_lbl.setStyleSheet(f"color:{c['text_muted']};font-size:11px;min-width:70px;")
+        hl.addWidget(action_lbl)
+        self._tess_action_lbl = action_lbl
+
+        tess_btn = QPushButton()
+        tess_btn.setFixedHeight(26); tess_btn.setMinimumWidth(90)
+        self._tess_btn = tess_btn
+
+        if installed:
+            tess_btn.setText("🔍 Найден")
+            tess_btn.setEnabled(False)
+            tess_btn.setStyleSheet(
+                f"QPushButton{{background:{c['bg_input']};color:{c['text_muted']};"
+                f"border:1px solid {c['border']};border-radius:5px;font-size:11px;padding:0 10px;}}")
+        else:
+            tess_btn.setText("⬇ Установить")
+            tess_btn.setStyleSheet(
+                f"QPushButton{{background:{c['accent_blue']};color:#fff;border:none;"
+                f"border-radius:5px;font-size:11px;padding:0 10px;}}"
+                f"QPushButton:hover{{background:{c['accent_blue']}cc;}}")
+            tess_btn.clicked.connect(self._install_tesseract)
+        hl.addWidget(tess_btn)
+        outer.addWidget(main_row)
+
+        # Путь / описание
+        desc_row = QHBoxLayout(); desc_row.setSpacing(6)
+        desc_row.setContentsMargins(30, 0, 0, 0)
+        lbl_tess_desc = QLabel("Движок распознавания текста на фото (OCR)")
+        lbl_tess_desc.setStyleSheet(f"color:{c['text_muted']};font-size:11px;")
+        desc_row.addWidget(lbl_tess_desc)
+
+        path_lbl = QLabel()
+        path_lbl.setStyleSheet(
+            f"color:{c['accent_blue']};font-size:10px;text-decoration:underline;")
+        path_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+        if tess_path:
+            short = tess_path if len(tess_path) < 55 else "…" + tess_path[-52:]
+            path_lbl.setText(short)
+            path_lbl.setToolTip(tess_path)
+            import os as _os
+            from pathlib import Path as _P
+            tess_dir = str(_P(tess_path).parent)
+            path_lbl.mousePressEvent = lambda e, d=tess_dir: self._open_folder(d)
+        else:
+            path_lbl.setText("не найден")
+            path_lbl.setStyleSheet("color:#f44336;font-size:10px;")
+        desc_row.addWidget(path_lbl)
+        desc_row.addStretch()
+        outer.addLayout(desc_row)
+        self._tess_path_lbl = path_lbl
+
+        return row_w
+
+    def _install_tesseract(self):
+        """Открывает диалог установки Tesseract."""
+        try:
+            from core.tesseract_langs import TesseractLangsDialog
+            dlg = TesseractLangsDialog(parent=self)
+            dlg.exec()
+            # После закрытия — перепроверяем
+            self._recheck_tesseract()
+        except Exception as e:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(self, "Tesseract",
+                f"Установи Tesseract вручную:\n"
+                f"  winget install UB-Mannheim.TesseractOCR\n"
+                f"или скачай с:\n"
+                f"  github.com/UB-Mannheim/tesseract/wiki\n\n{e}")
+
+    def _recheck_tesseract(self):
+        """Перепроверяет наличие Tesseract и обновляет UI."""
+        from core import tesseract_langs as tl
+        tl._tesseract_cmd_cache = False           # сбрасываем кеш
+        tess_path = tl.find_tesseract_cmd()
+        c = get_colors(self._theme)
+
+        if hasattr(self, "_tess_status_lbl"):
+            self._tess_status_lbl.setText("✅" if tess_path else "❌")
+        if hasattr(self, "_tess_path_lbl"):
+            if tess_path:
+                short = tess_path if len(tess_path) < 55 else "…" + tess_path[-52:]
+                self._tess_path_lbl.setText(short)
+                self._tess_path_lbl.setToolTip(tess_path)
+                self._tess_path_lbl.setStyleSheet(
+                    f"color:{c['accent_blue']};font-size:10px;text-decoration:underline;")
+                from pathlib import Path
+                tess_dir = str(Path(tess_path).parent)
+                self._tess_path_lbl.mousePressEvent = (
+                    lambda e, d=tess_dir: self._open_folder(d))
+            else:
+                self._tess_path_lbl.setText("не найден")
+                self._tess_path_lbl.setStyleSheet("color:#f44336;font-size:10px;")
+        if hasattr(self, "_tess_btn") and tess_path:
+            self._tess_btn.setText("🔍 Найден")
+            self._tess_btn.setEnabled(False)
+            self._tess_btn.setStyleSheet(
+                f"QPushButton{{background:{c['bg_input']};color:{c['text_muted']};"
+                f"border:1px solid {c['border']};border-radius:5px;"
+                f"font-size:11px;padding:0 10px;}}")
+        if hasattr(self, "_tess_action_lbl") and tess_path:
+            self._tess_action_lbl.setText("✅ Готово")
 
     def _fill_pkg_rows(self, c: dict | None = None):
         """Заполняет строки. Проверка установки идёт в фоне через PkgCheckThread."""

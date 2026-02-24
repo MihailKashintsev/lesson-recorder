@@ -1,33 +1,41 @@
 # -*- mode: python ; coding: utf-8 -*-
-# LessonRecorder.spec
-# PyInstaller сборочный файл — запускать через:
-#   pyinstaller LessonRecorder.spec
+"""
+LessonRecorder.spec
 
-from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
-import sys
+ВАЖНО: transcribe_worker.py включается как DATA-файл (.py), а не как модуль.
+Это нужно чтобы запускать его через пользовательский python.exe в рантайме,
+а не через bundled Python который не видит AppData-пакеты.
+"""
+
+from pathlib import Path
 
 block_cipher = None
 
-# Собираем данные faster-whisper (модели токенизатора)
-datas = []
-datas += collect_data_files("faster_whisper")
-datas += collect_data_files("av")  # PyAV для faster-whisper
+# Дополнительные данные: воркер .py и папки ресурсов
+added_files = [
+    # Воркер транскрипции — .py файл, запускается отдельным python.exe
+    ("core/transcribe_worker.py", "core"),
+]
 
-# Собираем нативные библиотеки
-binaries = []
-binaries += collect_dynamic_libs("sounddevice")
+# Добавляем ресурсы если есть
+for extra in ["resources", "assets", "tessdata"]:
+    if Path(extra).exists():
+        added_files.append((extra, extra))
+
+# Иконка
+icon_path = "app_icon.ico" if Path("app_icon.ico").exists() else None
 
 a = Analysis(
-    ["main.py", "core/transcribe_worker.py"],
+    ["main.py"],
     pathex=["."],
-    binaries=binaries,
-    datas=datas,
+    binaries=[],
+    datas=added_files,
     hiddenimports=[
-        "PyQt6",
-        "PyQt6.QtWidgets",
+        "core.transcribe_worker",
+        "core.python_path",
         "PyQt6.QtCore",
+        "PyQt6.QtWidgets",
         "PyQt6.QtGui",
-        "faster_whisper",
         "sounddevice",
         "numpy",
         "scipy",
@@ -35,16 +43,18 @@ a = Analysis(
         "requests",
         "packaging",
         "packaging.version",
-        "sqlite3",
-        "wave",
-        "ctranslate2",
-        "tokenizers",
-        "huggingface_hub",
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["tkinter", "matplotlib", "PIL", "IPython"],
+    excludes=[
+        # НЕ включаем whisper и faster_whisper в бандл —
+        # они устанавливаются пользователем в свой Python
+        "faster_whisper",
+        "whisper",
+        "torch",
+        "ctranslate2",
+    ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
@@ -63,13 +73,14 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=False,          # без консольного окна
+    console=False,           # GUI приложение — без консоли
     disable_windowed_traceback=False,
+    argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    # icon="installer/icon.ico",  # раскомментируй если добавишь иконку
-    version="installer/version_info.txt",
+    icon=icon_path,
+    version="version_info.txt" if Path("version_info.txt").exists() else None,
 )
 
 coll = COLLECT(

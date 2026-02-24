@@ -1,8 +1,30 @@
+# Основные зависимости LessonRecorder
+# Установка: pip install -r requirements.txt
+
+# GUI
 PyQt6>=6.5.0
-faster-whisper>=0.10.0
-pyaudiowpatch>=0.2.12
+
+# Транскрипция
+openai-whisper>=20231117
+faster-whisper>=1.0.0
+
+# Аудио
 sounddevice>=0.4.6
+PyAudioWPatch>=0.2.12
 numpy>=1.24.0
-requests>=2.31.0
 scipy>=1.11.0
+
+# AI-конспекты
+openai>=1.0.0
+
+# HTTP
+requests>=2.31.0
 packaging>=23.0
+
+# OCR (опционально)
+pytesseract>=0.3.10
+Pillow>=10.0.0
+opencv-python>=4.8.0
+
+# Google Gemini (опционально)
+google-generativeai>=0.3.0

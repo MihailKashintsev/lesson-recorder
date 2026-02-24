@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QProgressBar, QTextEdit, QFrame, QDialog,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPropertyAnimation, QEasingCurve
 from PyQt6.QtGui import QColor, QPainter, QFont
 
 from core.recorder import Recorder, get_audio_path
@@ -368,16 +368,17 @@ class RecordingWidget(QWidget):
         self._state = STATE_RECORDING
         self._start_time = time.time()
         self._timer.start()
-        self._photo_text = ""
-        self.photo_lbl.setText("")
+        # НЕ очищаем _photo_text здесь — текст с фото добавляется ДО записи
         self.log_area.clear()
         self.photo_btn.setEnabled(False)
         self.record_btn.setText("⏹  Остановить")
         self.record_btn.setStyleSheet(self._rec_style(True))
+        self._start_pulse()
         self._log_header("Запись начата")
         self._log_info(f"Источник: {source_text}")
 
     def _stop_recording(self):
+        self._stop_pulse()
         if self._recorder:
             self._recorder.stop()
         self._timer.stop()
@@ -463,6 +464,7 @@ class RecordingWidget(QWidget):
         self.lesson_saved.emit()
 
     def _on_error(self, msg: str):
+        self._stop_pulse()
         self._log_separator()
         self._log_error(f"ОШИБКА: {msg}")
         self.status_label.setText(f"Ошибка: {msg[:100]}")
@@ -527,14 +529,32 @@ class RecordingWidget(QWidget):
 
     # ── Styles ────────────────────────────────────────────────────────────
 
+    def _start_pulse(self):
+        """Пульсирующий эффект кнопки во время записи."""
+        if not hasattr(self, "_pulse_anim"):
+            self._pulse_anim = QPropertyAnimation(self.record_btn, b"maximumWidth", self)
+        anim = self._pulse_anim
+        anim.setDuration(900)
+        anim.setStartValue(200)
+        anim.setKeyValueAt(0.5, 208)
+        anim.setEndValue(200)
+        anim.setEasingCurve(QEasingCurve.Type.InOutSine)
+        anim.setLoopCount(-1)
+        anim.start()
+
+    def _stop_pulse(self):
+        if hasattr(self, "_pulse_anim"):
+            self._pulse_anim.stop()
+            self.record_btn.setMaximumWidth(16777215)
+
     def _rec_style(self, active: bool) -> str:
         c = get_colors(self._theme)
         if active:
-            bg, hv = c["rec_stop"], c["rec_stop_hv"]
-            text = "⏹  Остановить"
+            bg = "qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #da3633,stop:1 #f85149)"
+            hv = "#f85149"
         else:
-            bg, hv = c["rec_start"], c["rec_start_hv"]
-            text = "⏺  Начать запись"
+            bg = "qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #238636,stop:1 #2ea043)"
+            hv = "#2ea043"
         return f"""
             QPushButton {{
                 background: {bg};
@@ -543,7 +563,12 @@ class RecordingWidget(QWidget):
                 border-radius: 10px;
                 font-size: 14px;
                 font-weight: 600;
+                letter-spacing: 0.3px;
             }}
             QPushButton:hover {{ background: {hv}; }}
-            QPushButton:disabled {{ background: {c['border']}; color: {c['text_dim']}; }}
+            QPushButton:pressed {{ padding-top: 2px; }}
+            QPushButton:disabled {{
+                background: {c['border']};
+                color: {c['text_dim']};
+            }}
         """

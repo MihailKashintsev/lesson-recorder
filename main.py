@@ -116,7 +116,9 @@ def _pip_install(pip_name: str) -> bool:
 
 def _autoinstall_qt(app, missing):
     """Диалог установки пакетов при первом запуске."""
-    from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QProgressBar
+    from PyQt6.QtWidgets import (
+        QDialog, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar, QFrame,
+    )
     from PyQt6.QtCore import QThread, pyqtSignal, Qt
 
     class Worker(QThread):
@@ -137,33 +139,78 @@ def _autoinstall_qt(app, missing):
             self.all_done.emit(failed)
 
     dlg = QDialog()
-    dlg.setWindowTitle("LessonRecorder — Первый запуск")
-    dlg.setMinimumWidth(400)
+    dlg.setWindowTitle("LessonRecorder — Установка")
+    dlg.setMinimumWidth(480)
+    dlg.setFixedWidth(480)
     dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
-    dlg.setStyleSheet("QDialog{background:#141414;color:#e0e0e0;} QLabel{color:#e0e0e0;background:transparent;}")
+    dlg.setStyleSheet("""
+        QDialog { background: #0d1117; color: #e6edf3; border-radius: 12px; }
+        QLabel  { color: #e6edf3; background: transparent; }
+    """)
 
     lay = QVBoxLayout(dlg)
-    lay.setContentsMargins(28, 28, 28, 28)
-    lay.setSpacing(14)
+    lay.setContentsMargins(32, 32, 32, 32)
+    lay.setSpacing(0)
 
-    lay.addWidget(QLabel("⚙️  Первый запуск",
-                         styleSheet="font-size:16px;font-weight:700;"))
-    lay.addWidget(QLabel("Устанавливаю необходимые компоненты…",
-                         styleSheet="color:#888;font-size:13px;"))
+    # Header
+    lbl_title = QLabel("⚙️  Первый запуск")
+    lbl_title.setStyleSheet(
+        "font-size:18px; font-weight:700; color:#e6edf3; margin-bottom:6px;")
+    lay.addWidget(lbl_title)
 
+    lbl_sub = QLabel("Устанавливаю необходимые компоненты…")
+    lbl_sub.setStyleSheet("color:#8b949e; font-size:13px;")
+    lay.addWidget(lbl_sub)
+    lay.addSpacing(24)
+
+    # Progress bar — широкий, с процентами
     pbar = QProgressBar()
-    pbar.setRange(0, len(missing))
+    pbar.setRange(0, max(len(missing), 1))
     pbar.setValue(0)
-    pbar.setFixedHeight(8)
-    pbar.setStyleSheet(
-        "QProgressBar{border:none;background:#252525;border-radius:4px;}"
-        "QProgressBar::chunk{background:#4a9eff;border-radius:4px;}"
-    )
+    pbar.setFixedHeight(22)
+    pbar.setFormat("%p%  (%v / %m)")
+    pbar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    pbar.setStyleSheet("""
+        QProgressBar {
+            border: none;
+            background: #21262d;
+            border-radius: 11px;
+            color: #e6edf3;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        QProgressBar::chunk {
+            background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                stop:0 #58a6ff, stop:1 #bc8cff);
+            border-radius: 11px;
+        }
+    """)
     lay.addWidget(pbar)
+    lay.addSpacing(12)
 
-    status = QLabel(f"Скачиваю {missing[0][1]}…" if missing else "")
-    status.setStyleSheet("color:#888;font-size:12px;")
+    # Status
+    status = QLabel(f"↓  {missing[0][1]}" if missing else "")
+    status.setStyleSheet("color:#8b949e; font-size:12px;")
     lay.addWidget(status)
+
+    # Package list
+    lay.addSpacing(16)
+    sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
+    sep.setStyleSheet("color:#21262d;")
+    lay.addWidget(sep)
+    lay.addSpacing(10)
+
+    pkg_labels: dict[str, QLabel] = {}
+    for _, pip_name in missing:
+        row = QHBoxLayout()
+        dot = QLabel("○")
+        dot.setFixedWidth(16)
+        dot.setStyleSheet("color:#484f58; font-size:12px;")
+        name = QLabel(pip_name)
+        name.setStyleSheet("color:#8b949e; font-size:12px;")
+        row.addWidget(dot); row.addWidget(name); row.addStretch()
+        pkg_labels[pip_name] = (dot, name)
+        lay.addLayout(row)
 
     done_count = [0]
     failed_out = [[]]
@@ -173,10 +220,14 @@ def _autoinstall_qt(app, missing):
         pbar.setValue(done_count[0])
         idx = done_count[0]
         nxt = missing[idx][1] if idx < len(missing) else ""
-        status.setText(
-            f"{'✅' if ok else '❌'} {pip_name}"
-            + (f"   →   Скачиваю {nxt}…" if nxt else "")
-        )
+        icon = "✅" if ok else "❌"
+        color = "#3fb950" if ok else "#f85149"
+        if pip_name in pkg_labels:
+            dot, name = pkg_labels[pip_name]
+            dot.setText(icon)
+            dot.setStyleSheet(f"font-size:12px; color:{color};")
+            name.setStyleSheet(f"color:{color}; font-size:12px;")
+        status.setText(f"↓  {nxt}" if nxt else "✅  Готово")
 
     def on_all(failed):
         failed_out[0] = failed

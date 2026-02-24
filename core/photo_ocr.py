@@ -212,12 +212,21 @@ class LangSelectorWidget(QWidget):
 
     def _build(self, installed_langs: list[str]):
         layout = self.layout()
-        # Чистим
-        while layout.count():
-            item = layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+
+        # Рекурсивная очистка: layout.takeAt не удаляет дочерние layouts,
+        # только widgets — поэтому кнопки в hdr-строке дублировались при reload
+        def _clear_layout(lay):
+            while lay.count():
+                item = lay.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+                elif item.layout():
+                    _clear_layout(item.layout())
+
+        _clear_layout(layout)
         self._checkboxes.clear()
+        self._install_btn = None
+        self._refresh_btn = None
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
 
@@ -415,10 +424,12 @@ class PhotoOcrDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(14); layout.setContentsMargins(24,24,24,24)
 
-        layout.addWidget(QLabel("📷  Добавьте фотографии досок, слайдов или заметок",
-            styleSheet="font-size:15px;font-weight:bold;color:#e0e0e0;"))
-        layout.addWidget(QLabel("Текст с фото будет распознан и добавлен к конспекту.",
-            styleSheet="color:#888;font-size:12px;"))
+        lbl_h = QLabel("📷  Добавьте фотографии досок, слайдов или заметок")
+        lbl_h.setStyleSheet("font-size:15px;font-weight:bold;color:#e0e0e0;")
+        layout.addWidget(lbl_h)
+        lbl_s = QLabel("Текст с фото будет распознан и добавлен к конспекту.")
+        lbl_s.setStyleSheet("color:#888;font-size:12px;")
+        layout.addWidget(lbl_s)
 
         row = QHBoxLayout()
         self.file_btn = QPushButton("🖼  Выбрать файл")
@@ -534,7 +545,14 @@ class PhotoOcrDialog(QDialog):
 
     def _refresh_langs(self):
         """Перечитывает tessdata в фоне — не блокирует UI."""
-        self._lang_sel.set_checking(True)     # ← блокируем на время
+        # Сбрасываем кеш пути к tesseract — после установки новых языков
+        # find_tesseract_cmd вернёт обновлённый результат
+        try:
+            from core import tesseract_langs as tl
+            tl._tesseract_cmd_cache = False
+        except Exception:
+            pass
+        self._lang_sel.set_checking(True)
         self._ocr_status.setStyleSheet("color:#888; font-size:12px;")
         self._ocr_status.setText("🔄 Ищу Tesseract и языковые пакеты…")
         self._init_thread = TesseractInitThread(self)
@@ -547,6 +565,9 @@ class PhotoOcrDialog(QDialog):
         dlg = tl.LangInstallDialog(preselect=missing, parent=self)
         dlg.langs_changed.connect(self._refresh_langs)
         dlg.exec()
+        # После закрытия диалога — всегда перепроверяем
+        # (пользователь мог установить языки через системный Tesseract)
+        self._refresh_langs()
 
     # ── OCR ───────────────────────────────────────────────────────────────
 

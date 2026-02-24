@@ -12,6 +12,7 @@
   3. Стандартные пути Windows
 """
 import os
+import sys
 import shutil
 import tempfile
 import subprocess
@@ -56,7 +57,25 @@ DOWNLOADABLE_LANGS = list(LANG_NAMES.keys())
 # Утилиты поиска
 # ─────────────────────────────────────────────────────────────────────────────
 
+_tesseract_cmd_cache: str | None | bool = False   # False = не проверялось
+
+
 def find_tesseract_cmd() -> str | None:
+    """
+    Ищет tesseract.exe быстрыми методами (без rglob по всему диску).
+    Результат кешируется на время сессии.
+    """
+    global _tesseract_cmd_cache
+    if _tesseract_cmd_cache is not False:
+        return _tesseract_cmd_cache   # type: ignore[return-value]
+
+    result = _find_tesseract_cmd_uncached()
+    _tesseract_cmd_cache = result
+    return result
+
+
+def _find_tesseract_cmd_uncached() -> str | None:
+    # 1. Фиксированные пути — мгновенно
     for p in [
         r"C:\Program Files\Tesseract-OCR\tesseract.exe",
         r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
@@ -67,14 +86,17 @@ def find_tesseract_cmd() -> str | None:
         if Path(p).exists():
             return p
 
+    # 2. PATH — мгновенно
     found = shutil.which("tesseract")
     if found:
         return found
 
+    # 3. Реестр Windows — быстро
     try:
         import winreg
         for hive in [winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER]:
-            for sub in [r"SOFTWARE\Tesseract-OCR", r"SOFTWARE\WOW6432Node\Tesseract-OCR"]:
+            for sub in [r"SOFTWARE\Tesseract-OCR",
+                        r"SOFTWARE\WOW6432Node\Tesseract-OCR"]:
                 try:
                     with winreg.OpenKey(hive, sub) as key:
                         install_dir, _ = winreg.QueryValueEx(key, "InstallDir")
@@ -86,22 +108,21 @@ def find_tesseract_cmd() -> str | None:
     except ImportError:
         pass
 
-    for tessdata_path in [
-        r"C:\Program Files\Tesseract-OCR\tessdata",
-        r"C:\Program Files (x86)\Tesseract-OCR\tessdata",
-    ]:
-        td = Path(tessdata_path)
-        if td.exists():
-            exe = td.parent / "tesseract.exe"
-            if exe.exists():
-                return str(exe)
-
+    # 4. Команда where (Windows) / which (Unix) — быстро
+    import subprocess
     try:
-        for exe in Path.home().rglob("tesseract.exe"):
-            return str(exe)
-    except (PermissionError, OSError):
+        r = subprocess.run(
+            ["where", "tesseract"] if sys.platform == "win32" else ["which", "tesseract"],
+            capture_output=True, text=True, timeout=3,
+        )
+        if r.returncode == 0:
+            line = r.stdout.strip().splitlines()[0].strip()
+            if line and Path(line).exists():
+                return line
+    except Exception:
         pass
 
+    # НЕ используем rglob — это сканирование всего диска (десятки секунд)
     return None
 
 
@@ -413,11 +434,15 @@ class TesseractTab(QWidget):
         # Прогресс
         self.pbar = QProgressBar()
         self.pbar.setRange(0, 100)
-        self.pbar.setFixedHeight(10)
+        self.pbar.setFixedHeight(22)
         self.pbar.setVisible(False)
+        self.pbar.setFormat("%p%")
+        self.pbar.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.pbar.setStyleSheet(
-            "QProgressBar{border:none;background:#2a2a2a;border-radius:5px;}"
-            "QProgressBar::chunk{background:#4a9eff;border-radius:5px;}"
+            "QProgressBar{border:none;background:#21262d;border-radius:11px;"
+            "color:#e6edf3;font-size:11px;font-weight:600;}"
+            "QProgressBar::chunk{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            "stop:0 #58a6ff,stop:1 #bc8cff);border-radius:11px;}"
         )
         layout.addWidget(self.pbar)
 
@@ -476,6 +501,9 @@ class TesseractTab(QWidget):
             self.status_lbl.setText(
                 "✅ Установщик запущен. После установки перезапусти приложение."
             )
+            # Сбрасываем кеш — после установки tesseract будет доступен
+            global _tesseract_cmd_cache
+            _tesseract_cmd_cache = False
             self.installed.emit()
         except Exception as e:
             self.status_lbl.setText(f"❌ Не удалось запустить: {e}")
@@ -592,11 +620,15 @@ class LangsTab(QWidget):
         # Прогресс
         self.pbar = QProgressBar()
         self.pbar.setRange(0, 100)
-        self.pbar.setFixedHeight(8)
+        self.pbar.setFixedHeight(22)
         self.pbar.setVisible(False)
+        self.pbar.setFormat("%p%")
+        self.pbar.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.pbar.setStyleSheet(
-            "QProgressBar{border:none;background:#252525;border-radius:4px;}"
-            "QProgressBar::chunk{background:#4a9eff;border-radius:4px;}"
+            "QProgressBar{border:none;background:#21262d;border-radius:11px;"
+            "color:#e6edf3;font-size:11px;font-weight:600;}"
+            "QProgressBar::chunk{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            "stop:0 #58a6ff,stop:1 #bc8cff);border-radius:11px;}"
         )
         layout.addWidget(self.pbar)
 

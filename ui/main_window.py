@@ -2,10 +2,13 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-    QLabel, QPushButton, QStackedWidget, QFrame
+    QLabel, QPushButton, QStackedWidget, QFrame, QGraphicsOpacityEffect,
 )
-from PyQt6.QtCore import Qt, QSize, pyqtSignal
-from PyQt6.QtGui import QIcon, QFont, QPixmap
+from PyQt6.QtCore import (
+    Qt, QSize, pyqtSignal, QPropertyAnimation, QEasingCurve,
+    QParallelAnimationGroup, QTimer,
+)
+from PyQt6.QtGui import QIcon, QFont, QColor
 
 from ui.recording_widget import RecordingWidget
 from ui.history_widget import HistoryWidget
@@ -20,51 +23,83 @@ NAV_ITEMS = [
 
 
 class NavButton(QPushButton):
-    def __init__(self, code: str, icon: str, label: str, colors: dict, parent=None):
+    def __init__(self, icon: str, label: str, parent=None):
         super().__init__(parent)
-        self._colors = colors
-        self._code = code
-        self.setCheckable(True)
-        self._icon_str = icon
+        self._icon_str  = icon
         self._label_str = label
-        self.setFixedSize(76, 68)
-        self._refresh_style(False)
-        self.toggled.connect(self._refresh_style)
+        self.setCheckable(True)
+        self.setFixedSize(80, 72)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._apply_style(False)
+        self.toggled.connect(self._apply_style)
 
-    def _refresh_style(self, active: bool):
-        c = self._colors
+    def _apply_style(self, active: bool):
+        # Sidebar всегда тёмный
         if active:
-            bg = c["bg_selected"]
-            color = c["nav_active"]
-            border = f"border-left: 2px solid {c['accent_blue']};"
+            bg     = "rgba(88,166,255,0.15)"
+            color  = "#e6edf3"
+            dot    = "#58a6ff"
+            weight = "600"
         else:
-            bg = "transparent"
-            color = c["nav_text"]
-            border = "border-left: 2px solid transparent;"
+            bg     = "transparent"
+            color  = "#8b949e"
+            dot    = "transparent"
+            weight = "400"
+
         self.setStyleSheet(f"""
             QPushButton {{
                 background: {bg};
                 color: {color};
                 border: none;
-                {border}
+                border-left: 3px solid {dot};
                 border-radius: 0;
                 font-size: 10px;
-                padding: 4px 2px;
+                font-weight: {weight};
+                padding: 6px 2px 6px 0;
+                letter-spacing: 0.3px;
             }}
             QPushButton:hover {{
-                background: {c['bg_hover']};
-                color: {c['nav_active']};
+                background: rgba(139,148,158,0.1);
+                color: #e6edf3;
             }}
         """)
         self.setText(f"{self._icon_str}\n{self._label_str}")
 
-    def update_colors(self, colors: dict):
-        self._colors = colors
-        self._refresh_style(self.isChecked())
+    def update_colors(self, _colors: dict):
+        # Sidebar фиксированно тёмный — перерисовываем без изменений
+        self._apply_style(self.isChecked())
+
+
+class FadeStackedWidget(QStackedWidget):
+    """QStackedWidget с анимацией fade при переключении страниц."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._anim_duration = 180
+
+    def setCurrentIndex(self, index: int):
+        if index == self.currentIndex():
+            return
+        current = self.currentWidget()
+        super().setCurrentIndex(index)
+        next_w = self.currentWidget()
+        if not next_w or not current:
+            return
+
+        # Fade-in нового виджета
+        effect = QGraphicsOpacityEffect(next_w)
+        next_w.setGraphicsEffect(effect)
+        anim = QPropertyAnimation(effect, b"opacity", self)
+        anim.setDuration(self._anim_duration)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        anim.finished.connect(lambda: next_w.setGraphicsEffect(None))
+        anim.start()
 
 
 class MainWindow(QMainWindow):
-    theme_changed = pyqtSignal(str)  # "dark" | "light"
+    theme_changed = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -73,9 +108,8 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle("LessonRecorder")
         self.setMinimumSize(1000, 650)
-        self.resize(1220, 760)
+        self.resize(1240, 780)
 
-        # Загружаем иконку
         self._load_icon()
         self._build_ui()
         self.apply_theme(self._theme)
@@ -92,86 +126,78 @@ class MainWindow(QMainWindow):
         c = get_colors(self._theme)
         root = QWidget()
         self.setCentralWidget(root)
-        root_layout = QHBoxLayout(root)
-        root_layout.setContentsMargins(0, 0, 0, 0)
-        root_layout.setSpacing(0)
+        rl = QHBoxLayout(root)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(0)
 
-        # ── Sidebar ───────────────────────────────────────────────────────
+        # ── Sidebar ───────────────────────────────────────────
         self.sidebar = QWidget()
         self.sidebar.setFixedWidth(80)
         self.sidebar.setObjectName("sidebar")
-        sb_layout = QVBoxLayout(self.sidebar)
-        sb_layout.setContentsMargins(0, 0, 0, 0)
-        sb_layout.setSpacing(0)
-        sb_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        sb = QVBoxLayout(self.sidebar)
+        sb.setContentsMargins(0, 0, 0, 0)
+        sb.setSpacing(0)
+        sb.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        # Logo area
-        logo_widget = QWidget()
-        logo_widget.setFixedHeight(72)
-        logo_widget.setObjectName("logoArea")
-        logo_layout = QVBoxLayout(logo_widget)
-        logo_layout.setContentsMargins(0, 0, 0, 0)
-        logo_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Logo
+        logo_w = QWidget()
+        logo_w.setFixedHeight(76)
+        logo_l = QVBoxLayout(logo_w)
+        logo_l.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        logo = QLabel("🎙")
+        logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        logo.setStyleSheet("font-size:28px; background:transparent;")
+        logo_l.addWidget(logo)
+        sb.addWidget(logo_w)
 
-        logo_lbl = QLabel("🎙")
-        logo_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        logo_lbl.setStyleSheet("font-size: 26px; background: transparent;")
-        logo_layout.addWidget(logo_lbl)
-        sb_layout.addWidget(logo_widget)
-
-        # Divider
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
         sep.setObjectName("sidebarSep")
-        sb_layout.addWidget(sep)
+        sep.setStyleSheet("color:#30363d; margin:0;")
+        sb.addWidget(sep)
+        sb.addSpacing(6)
 
-        sb_layout.addSpacing(8)
-
-        # Nav buttons
         self._nav_buttons: list[NavButton] = []
-        for code, icon, label, idx in NAV_ITEMS:
-            btn = NavButton(code, icon, label, c)
+        for _code, icon, label, idx in NAV_ITEMS:
+            btn = NavButton(icon, label)
             btn.clicked.connect(lambda _, i=idx: self._switch_page(i))
-            sb_layout.addWidget(btn)
+            sb.addWidget(btn)
             self._nav_buttons.append(btn)
 
-        sb_layout.addStretch()
+        sb.addStretch()
 
         # Version
         try:
             from version import __version__
         except ImportError:
             __version__ = "dev"
+        ver = QLabel(f"v{__version__}")
+        ver.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ver.setStyleSheet("color:#484f58; font-size:10px; padding:10px 0;")
+        sb.addWidget(ver)
 
-        ver_lbl = QLabel(f"v{__version__}")
-        ver_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        ver_lbl.setObjectName("versionLabel")
-        ver_lbl.setStyleSheet(f"color: {c['text_dim']}; font-size: 10px; padding: 8px 0;")
-        sb_layout.addWidget(ver_lbl)
+        rl.addWidget(self.sidebar)
 
-        root_layout.addWidget(self.sidebar)
-
-        # ── Vertical divider ──────────────────────────────────────────────
+        # Divider
         vdiv = QFrame()
         vdiv.setFrameShape(QFrame.Shape.VLine)
         vdiv.setObjectName("mainVDivider")
-        root_layout.addWidget(vdiv)
+        rl.addWidget(vdiv)
 
-        # ── Content area ──────────────────────────────────────────────────
-        self.stack = QStackedWidget()
+        # ── Content ───────────────────────────────────────────
+        self.stack = FadeStackedWidget()
         self.stack.setObjectName("contentStack")
 
         self.recording_widget = RecordingWidget()
-        self.history_widget = HistoryWidget()
-        self.settings_widget = SettingsWidget()
+        self.history_widget   = HistoryWidget()
+        self.settings_widget  = SettingsWidget()
 
         self.stack.addWidget(self.recording_widget)
         self.stack.addWidget(self.history_widget)
         self.stack.addWidget(self.settings_widget)
 
-        root_layout.addWidget(self.stack)
+        rl.addWidget(self.stack)
 
-        # Signals
         self.recording_widget.lesson_saved.connect(self.history_widget.refresh)
         self.settings_widget.theme_changed.connect(self.apply_theme)
 
@@ -188,27 +214,26 @@ class MainWindow(QMainWindow):
         self._theme = theme
         c = get_colors(theme)
 
-        # App-wide stylesheet
         self.setStyleSheet(build_app_stylesheet(theme))
 
-        # Sidebar specific
+        # Sidebar всегда тёмный
+        sidebar_bg = "#010409" if theme == "dark" else "#1e2a3a"
+        sidebar_sep = "#30363d" if theme == "dark" else "#273549"
         self.sidebar.setStyleSheet(f"""
-            QWidget#sidebar {{ background: {c['bg_sidebar']}; }}
-            QWidget#logoArea {{ background: {c['bg_sidebar']}; }}
-            QFrame#sidebarSep {{ color: {c['border']}; }}
+            QWidget#sidebar {{ background: {sidebar_bg}; }}
+            QFrame#sidebarSep {{ color: {sidebar_sep}; }}
         """)
 
-        self.stack.setStyleSheet(f"QStackedWidget#contentStack {{ background: {c['bg_main']}; }}")
-
-        # Propagate to main_window divider
+        vdiv_color = "#30363d" if theme == "dark" else "#cbd5e1"
         for child in self.findChildren(QFrame, "mainVDivider"):
-            child.setStyleSheet(f"color: {c['border']};")
+            child.setStyleSheet(f"color: {vdiv_color};")
 
-        # Update nav button colors
+        self.stack.setStyleSheet(
+            f"QStackedWidget#contentStack {{ background: {c['bg_main']}; }}")
+
         for btn in self._nav_buttons:
             btn.update_colors(c)
 
-        # Propagate theme change
         try:
             self.recording_widget.apply_theme(theme)
             self.history_widget.apply_theme(theme)
