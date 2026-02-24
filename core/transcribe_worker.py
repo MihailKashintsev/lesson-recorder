@@ -1,8 +1,12 @@
 """
 transcribe_worker.py — subprocess-воркер транскрипции.
 
+Порядок попыток:
+  1. faster_whisper (быстрый, но требует AVX2 от ctranslate2)
+  2. openai-whisper (медленнее, но работает на любом CPU)
+
 Флаги:
-  --transcribe-worker   (добавляет main.py при frozen-запуске, игнорируется)
+  --transcribe-worker   игнорируется (добавляется main.py при frozen-запуске)
   --no-faster-whisper   пропустить faster_whisper, сразу openai-whisper
 """
 import sys, os, json, wave
@@ -47,7 +51,6 @@ def read_wav(path: str):
 
 
 def try_faster_whisper(pcm, model_size: str, language):
-    """Возвращает текст или бросает исключение."""
     from faster_whisper import WhisperModel
     emit("progress", f"Загружаю faster-whisper [{model_size}]…")
     model = WhisperModel(model_size, device="cpu", compute_type="float32",
@@ -68,13 +71,13 @@ def try_faster_whisper(pcm, model_size: str, language):
 
 
 def try_openai_whisper(pcm, model_size: str, language):
-    """Возвращает текст или бросает исключение."""
     import whisper
     emit("progress", f"Загружаю openai-whisper [{model_size}]…")
     model = whisper.load_model(model_size, device="cpu")
-    emit("progress", "Распознаю речь…")
+    emit("progress", "Распознаю речь (openai-whisper)…")
     opts = {"fp16": False, "beam_size": 5}
-    if language: opts["language"] = language
+    if language:
+        opts["language"] = language
     result = model.transcribe(pcm, **opts)
     return (result.get("text") or "").strip()
 
@@ -92,7 +95,8 @@ def main():
     audio_path = args[0]
     model_size = args[1]
     language   = args[2] if len(args) > 2 else None
-    if language in ("auto", "", "None", None): language = None
+    if language in ("auto", "", "None", None):
+        language = None
 
     if not os.path.exists(audio_path):
         emit("error", f"Файл не найден: {audio_path}")
@@ -113,7 +117,7 @@ def main():
         emit("error", "Запись слишком короткая (< 0.1 сек)")
         sys.exit(1)
 
-    # ── faster_whisper ────────────────────────────────────────────────────
+    # ── Попытка 1: faster_whisper ─────────────────────────────────────────
     faster_err = ""
     if not skip_faster:
         try:
@@ -122,28 +126,31 @@ def main():
             return
         except ImportError:
             faster_err = "не установлен"
-            emit("progress", f"faster-whisper {faster_err}, пробую openai-whisper…")
+            emit("progress", f"faster-whisper не установлен — пробую openai-whisper…")
         except Exception as e:
             faster_err = str(e)[:120]
-            emit("progress", f"faster-whisper ошибка: {faster_err}")
+            emit("progress", f"faster-whisper ошибка: {faster_err} — пробую openai-whisper…")
     else:
         emit("progress", "faster-whisper пропущен, использую openai-whisper…")
 
-    # ── openai-whisper ────────────────────────────────────────────────────
+    # ── Попытка 2: openai-whisper ─────────────────────────────────────────
     try:
         text = try_openai_whisper(pcm, model_size, language)
         emit("done", text)
     except ImportError:
+        # Ни один движок не установлен — подробное сообщение
         emit("error",
-             "Нет модуля транскрипции.\n\n"
-             "Открой Настройки → Пакеты и установи faster-whisper.\n"
-             f"(faster-whisper: {faster_err})")
+             "openai-whisper не установлен.\n\n"
+             "Открой Настройки → Пакеты и нажми ⬇ Установить напротив:\n"
+             "  • openai-whisper  (работает на любом CPU)\n\n"
+             "Или вставь в терминал:\n"
+             "  pip install openai-whisper")
         sys.exit(1)
     except Exception as e:
         emit("error",
-             f"Оба движка недоступны.\n"
-             f"faster-whisper: {faster_err}\n"
-             f"openai-whisper: {e}")
+             f"Ошибка openai-whisper: {e}\n\n"
+             f"faster-whisper: {faster_err if faster_err else 'нативный краш'}\n\n"
+             "Попробуй переустановить пакеты в Настройки → Пакеты.")
         sys.exit(1)
 
 

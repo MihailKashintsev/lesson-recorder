@@ -22,6 +22,7 @@ if "--transcribe-worker" in sys.argv:
 # ── Обязательные пакеты ───────────────────────────────────────────────────────
 REQUIRED = [
     ("faster_whisper", "faster-whisper"),
+    ("whisper",        "openai-whisper"),
     ("numpy",          "numpy"),
     ("scipy",          "scipy"),
     ("sounddevice",    "sounddevice"),
@@ -30,13 +31,62 @@ REQUIRED = [
 ]
 
 
+def _pip_show_installed(pip_name: str) -> bool:
+    """
+    Проверяет установку через 'pip show' — единственный надёжный способ
+    в frozen .exe. importlib.util.find_spec НЕ используем: он находит
+    пакеты внутри PyInstaller _internal и считает их «установленными».
+    """
+    import subprocess
+    try:
+        from core.python_path import find_python_exe
+        python = find_python_exe()
+    except Exception:
+        python = sys.executable
+        # Если в frozen-режиме — sys.executable = сам .exe,
+        # pip show через него не работает → считаем установленным
+        # (не показываем ложное предупреждение)
+        if getattr(sys, "frozen", False):
+            return True
+
+    flags = 0
+    if sys.platform == "win32":
+        try: flags = subprocess.CREATE_NO_WINDOW
+        except AttributeError: pass
+
+    try:
+        r = subprocess.run(
+            [python, "-m", "pip", "show", pip_name],
+            capture_output=True, text=True, timeout=10,
+            creationflags=flags,
+        )
+        if r.returncode != 0:
+            return False
+        # Проверяем что Location не внутри PyInstaller _internal
+        for line in r.stdout.splitlines():
+            if line.startswith("Location:"):
+                loc = line.split(":", 1)[1].strip()
+                if "_internal" in loc.replace("\\", "/"):
+                    return False
+        return True
+    except Exception:
+        return True  # При ошибке не показываем ложное предупреждение
+
+
 def _missing_packages():
-    import importlib, importlib.util
-    importlib.invalidate_caches()
-    return [
-        (imp, pip) for imp, pip in REQUIRED
-        if importlib.util.find_spec(imp.split(".")[0]) is None
-    ]
+    """Проверяет все пакеты параллельно чтобы не блокировать запуск."""
+    from concurrent.futures import ThreadPoolExecutor
+    results = []
+    with ThreadPoolExecutor(max_workers=7) as ex:
+        futures = {ex.submit(_pip_show_installed, pip): (imp, pip)
+                   for imp, pip in REQUIRED}
+        for fut, (imp, pip) in futures.items():
+            try:
+                if not fut.result(timeout=15):
+                    results.append((imp, pip))
+            except Exception:
+                pass  # Таймаут — не блокируем запуск
+    return results
 
 
 def _pip_install(pip_name: str) -> bool:
