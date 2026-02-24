@@ -96,12 +96,40 @@ def build_app_stylesheet(mode: ThemeMode) -> str:
         padding: 5px 10px;
         selection-background-color: {c['bg_selected']};
     }}
-    QComboBox::drop-down {{ border: none; width: 20px; }}
+    QComboBox::drop-down {{
+        border: none; width: 26px;
+        border-left: 1px solid {c['border']};
+        border-top-right-radius: 6px;
+        border-bottom-right-radius: 6px;
+    }}
+    QComboBox::down-arrow {{
+        width: 0; height: 0;
+        border-left: 5px solid transparent;
+        border-right: 5px solid transparent;
+        border-top: 6px solid {c['text_muted']};
+    }}
     QComboBox QAbstractItemView {{
         background: {c['bg_card']};
         color: {c['text']};
-        border: 1px solid {c['border']};
-        selection-background-color: {c['bg_selected']};
+        border: 1px solid {c['border_active']};
+        border-radius: 8px;
+        padding: 4px;
+        outline: none;
+        selection-background-color: {c['accent_blue']};
+        selection-color: #ffffff;
+    }}
+    QComboBox QAbstractItemView::item {{
+        padding: 6px 10px;
+        border-radius: 4px;
+        min-height: 22px;
+    }}
+    QComboBox QAbstractItemView::item:hover {{
+        background: {c['bg_hover']};
+        color: {c['text']};
+    }}
+    QComboBox QAbstractItemView::item:selected {{
+        background: {c['accent_blue']};
+        color: #ffffff;
     }}
     QLineEdit {{
         background: {c['bg_input']};

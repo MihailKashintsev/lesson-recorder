@@ -4,9 +4,120 @@ from PyQt6.QtWidgets import (
     QMessageBox, QScrollArea, QFrame, QButtonGroup, QRadioButton,
     QCheckBox, QStackedWidget,
 )
-from PyQt6.QtCore import Qt, pyqtSignal
-import json
+from PyQt6.QtCore import Qt, pyqtSignal, QThread
+import json, sys, subprocess
 from pathlib import Path
+
+# ── Python-пакеты — описания и метаданные ────────────────────────────────────
+PACKAGES_INFO = [
+    {
+        "import_name": "whisper",
+        "pip_name":    "openai-whisper",
+        "label":       "Whisper",
+        "desc":        "Офлайн-транскрипция аудио в текст (нейросеть OpenAI)",
+        "used_for":    "🎙 Запись и транскрипция",
+        "required":    True,
+    },
+    {
+        "import_name": "pytesseract",
+        "pip_name":    "pytesseract",
+        "label":       "pytesseract",
+        "desc":        "Python-обёртка для Tesseract OCR",
+        "used_for":    "📷 Фото → Текст",
+        "required":    True,
+    },
+    {
+        "import_name": "PIL",
+        "pip_name":    "Pillow",
+        "label":       "Pillow",
+        "desc":        "Открытие и обработка изображений",
+        "used_for":    "📷 Фото → Текст",
+        "required":    True,
+    },
+    {
+        "import_name": "openai",
+        "pip_name":    "openai",
+        "label":       "openai",
+        "desc":        "API-клиент для OpenAI, DeepSeek, Groq, OpenRouter",
+        "used_for":    "🤖 Создание конспектов (ИИ)",
+        "required":    True,
+    },
+    {
+        "import_name": "requests",
+        "pip_name":    "requests",
+        "label":       "requests",
+        "desc":        "HTTP-запросы: обновления приложения, скачивание языков",
+        "used_for":    "🔄 Обновления и языки OCR",
+        "required":    True,
+    },
+    {
+        "import_name": "sounddevice",
+        "pip_name":    "sounddevice",
+        "label":       "sounddevice",
+        "desc":        "Захват звука с микрофона",
+        "used_for":    "🎙 Запись аудио",
+        "required":    True,
+    },
+    {
+        "import_name": "pyaudiowpatch",
+        "pip_name":    "PyAudioWPatch",
+        "label":       "PyAudioWPatch",
+        "desc":        "Захват системного звука (Windows loopback)",
+        "used_for":    "🖥 Запись системного звука",
+        "required":    False,
+    },
+    {
+        "import_name": "cv2",
+        "pip_name":    "opencv-python",
+        "label":       "OpenCV",
+        "desc":        "Работа с веб-камерой для съёмки фото",
+        "used_for":    "📷 Камера в Фото → Текст",
+        "required":    False,
+    },
+    {
+        "import_name": "google.generativeai",
+        "pip_name":    "google-generativeai",
+        "label":       "google-generativeai",
+        "desc":        "API-клиент для Google Gemini",
+        "used_for":    "🤖 ИИ провайдер Gemini",
+        "required":    False,
+    },
+]
+
+
+def _is_package_installed(import_name: str) -> bool:
+    """Быстрая проверка через importlib без реального импорта."""
+    import importlib.util
+    # Для вложенных имён (google.generativeai) берём корневой пакет
+    root = import_name.split(".")[0]
+    return importlib.util.find_spec(root) is not None
+
+
+class PipThread(QThread):
+    """Устанавливает или удаляет pip-пакет в фоновом потоке."""
+    done = pyqtSignal(str, bool, str)   # (pip_name, success, message)
+
+    def __init__(self, action: str, pip_name: str):
+        super().__init__()
+        self.action   = action    # "install" | "uninstall"
+        self.pip_name = pip_name
+
+    def run(self):
+        try:
+            if self.action == "install":
+                cmd = [sys.executable, "-m", "pip", "install", self.pip_name, "--quiet",
+                       "--disable-pip-version-check"]
+            else:
+                cmd = [sys.executable, "-m", "pip", "uninstall", self.pip_name,
+                       "-y", "--quiet"]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+            if r.returncode == 0:
+                self.done.emit(self.pip_name, True, "")
+            else:
+                err = (r.stderr or r.stdout or "Неизвестная ошибка")[:300]
+                self.done.emit(self.pip_name, False, err)
+        except Exception as e:
+            self.done.emit(self.pip_name, False, str(e))
 
 from core.summarizer import PROVIDERS, get_provider_config
 from ui.theme import get_colors
@@ -48,8 +159,10 @@ class SettingsWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.settings = load_settings()
-        self._theme = self.settings.get("theme", "dark")
+        self.settings     = load_settings()
+        self._theme       = self.settings.get("theme", "dark")
+        self._pip_threads: dict[str, PipThread] = {}
+        self._pkg_rows:    dict[str, dict]       = {}
         self._build_ui()
 
     def apply_theme(self, theme: str):
@@ -59,6 +172,7 @@ class SettingsWidget(QWidget):
         self.setStyleSheet(self._widget_stylesheet(c))
 
     def _widget_stylesheet(self, c: dict) -> str:
+        bg_card = c.get("bg_card", c["bg_input"])
         return f"""
             QWidget {{ background: {c['bg_main']}; color: {c['text']}; }}
             QScrollArea, QScrollArea > QWidget > QWidget {{ background: {c['bg_main']}; }}
@@ -74,15 +188,65 @@ class SettingsWidget(QWidget):
                 background: {c['bg_main']};
             }}
             QLabel {{ color: {c['text']}; background: transparent; }}
+
+            /* ── ComboBox ── */
             QComboBox {{
                 background: {c['bg_input']}; color: {c['text']};
-                border: 1px solid {c['border']}; border-radius: 6px; padding: 5px 10px;
+                border: 1px solid {c['border']}; border-radius: 6px;
+                padding: 5px 32px 5px 10px;
+                min-height: 20px;
             }}
-            QComboBox::drop-down {{ border: none; }}
+            QComboBox:hover {{ border-color: {c['border_active']}; }}
+            QComboBox:focus {{ border-color: {c['border_active']}; outline: none; }}
+            QComboBox::drop-down {{
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 26px;
+                border-left: 1px solid {c['border']};
+                border-top-right-radius: 6px;
+                border-bottom-right-radius: 6px;
+                background: {c['bg_input']};
+            }}
+            QComboBox::down-arrow {{
+                width: 10px; height: 10px;
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 6px solid {c['text_muted']};
+            }}
+
+            /* ── Выпадающий список (dropdown popup) ── */
             QComboBox QAbstractItemView {{
-                background: {c['bg_card'] if 'bg_card' in c else c['bg_input']};
-                color: {c['text']}; border: 1px solid {c['border']};
+                background: {bg_card};
+                color: {c['text']};
+                border: 1px solid {c['border_active']};
+                border-radius: 8px;
+                padding: 4px;
+                outline: none;
+                selection-background-color: {c['accent_blue']};
+                selection-color: #ffffff;
             }}
+            QComboBox QAbstractItemView::item {{
+                padding: 6px 10px;
+                border-radius: 4px;
+                min-height: 24px;
+            }}
+            QComboBox QAbstractItemView::item:hover {{
+                background: {c['bg_hover']};
+                color: {c['text']};
+            }}
+            QComboBox QAbstractItemView::item:selected {{
+                background: {c['accent_blue']};
+                color: #ffffff;
+            }}
+            QComboBox QAbstractItemView QScrollBar:vertical {{
+                background: {bg_card};
+                width: 7px; border-radius: 4px;
+            }}
+            QComboBox QAbstractItemView QScrollBar::handle:vertical {{
+                background: {c['border']}; border-radius: 4px; min-height: 20px;
+            }}
+
             QLineEdit {{
                 background: {c['bg_input']}; color: {c['text']};
                 border: 1px solid {c['border']}; border-radius: 6px; padding: 5px 10px;
@@ -333,6 +497,9 @@ class SettingsWidget(QWidget):
 
         layout.addWidget(ai_group)
 
+        # ── Пакеты Python ─────────────────────────────────────────────────
+        layout.addWidget(self._build_packages_group(c))
+
         # ── Сохранить ─────────────────────────────────────────────────────
         save_btn = QPushButton("💾  Сохранить настройки")
         save_btn.clicked.connect(self._save)
@@ -565,6 +732,196 @@ class SettingsWidget(QWidget):
         url = get_provider_config(provider_id).get("signup_url", "")
         if url:
             webbrowser.open(f"https://{url}")
+
+    # ── Пакеты ────────────────────────────────────────────────────────────
+
+    def _build_packages_group(self, c: dict) -> QGroupBox:
+        group = QGroupBox("Python-зависимости")
+        vbox  = QVBoxLayout(group)
+        vbox.setSpacing(6)
+        vbox.setContentsMargins(16, 16, 16, 16)
+
+        header_row = QHBoxLayout()
+        header_row.addWidget(QLabel("Пакет", styleSheet=f"color:{c['text_muted']};font-size:11px;font-weight:600;"))
+        header_row.addStretch()
+        install_all_btn = QPushButton("⬇  Установить всё отсутствующее")
+        install_all_btn.setFixedHeight(26)
+        install_all_btn.setStyleSheet(
+            f"QPushButton{{background:{c['accent_blue']};color:#fff;border:none;"
+            f"border-radius:5px;font-size:11px;padding:0 12px;}}"
+            f"QPushButton:hover{{background:{c['accent_blue']}cc;}}"
+        )
+        install_all_btn.clicked.connect(self._install_missing)
+        header_row.addWidget(install_all_btn)
+        vbox.addLayout(header_row)
+
+        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"color:{c['border']};")
+        vbox.addWidget(sep)
+
+        for pkg in PACKAGES_INFO:
+            row = self._build_pkg_row(pkg, c)
+            vbox.addWidget(row)
+
+        return group
+
+    def _build_pkg_row(self, pkg: dict, c: dict) -> QWidget:
+        row_w = QWidget()
+        row_w.setStyleSheet("background:transparent;")
+        row_layout = QHBoxLayout(row_w)
+        row_layout.setContentsMargins(0, 3, 0, 3)
+        row_layout.setSpacing(10)
+
+        # Иконка статуса
+        installed = _is_package_installed(pkg["import_name"])
+        status_lbl = QLabel("✅" if installed else "❌")
+        status_lbl.setFixedWidth(20)
+        status_lbl.setStyleSheet("font-size:13px;")
+        row_layout.addWidget(status_lbl)
+
+        # Имя + описание
+        info_block = QVBoxLayout()
+        info_block.setSpacing(1)
+        name_row = QHBoxLayout()
+        name_row.setSpacing(8)
+        name_lbl = QLabel(pkg["label"])
+        name_lbl.setStyleSheet(f"color:{c['text']};font-size:12px;font-weight:600;")
+        name_row.addWidget(name_lbl)
+        badge = QLabel(pkg["used_for"])
+        badge.setStyleSheet(
+            f"color:{c['accent_blue']};font-size:10px;background:transparent;"
+        )
+        name_row.addWidget(badge)
+        if pkg["required"]:
+            req_lbl = QLabel("обязательный")
+            req_lbl.setStyleSheet(
+                f"color:#888;font-size:10px;background:{c['bg_input']};"
+                f"border-radius:3px;padding:1px 6px;"
+            )
+            name_row.addWidget(req_lbl)
+        name_row.addStretch()
+        info_block.addLayout(name_row)
+        desc_lbl = QLabel(pkg["desc"])
+        desc_lbl.setStyleSheet(f"color:{c['text_muted']};font-size:11px;")
+        info_block.addWidget(desc_lbl)
+        row_layout.addLayout(info_block, stretch=1)
+
+        # Кнопка + прогресс
+        action_lbl = QLabel("")
+        action_lbl.setStyleSheet(f"color:{c['text_muted']};font-size:11px;min-width:80px;")
+
+        if installed:
+            btn = QPushButton("🗑 Удалить")
+            btn.setFixedHeight(26)
+            btn.setStyleSheet(
+                "QPushButton{background:#3a1a1a;color:#f44336;border:none;"
+                "border-radius:5px;font-size:11px;padding:0 10px;}"
+                "QPushButton:hover{background:#5a2020;}"
+                "QPushButton:disabled{background:#222;color:#555;}"
+            )
+            btn.clicked.connect(lambda _, p=pkg: self._uninstall_package(p))
+        else:
+            btn = QPushButton("⬇ Установить")
+            btn.setFixedHeight(26)
+            btn.setStyleSheet(
+                f"QPushButton{{background:{c['accent_blue']};color:#fff;border:none;"
+                f"border-radius:5px;font-size:11px;padding:0 10px;}}"
+                f"QPushButton:hover{{background:{c['accent_blue']}cc;}}"
+                f"QPushButton:disabled{{background:#1a2a3a;color:#555;}}"
+            )
+            btn.clicked.connect(lambda _, p=pkg: self._install_package(p))
+
+        row_layout.addWidget(action_lbl)
+        row_layout.addWidget(btn)
+
+        self._pkg_rows[pkg["pip_name"]] = {
+            "status_lbl": status_lbl,
+            "action_lbl": action_lbl,
+            "btn":        btn,
+            "pkg":        pkg,
+        }
+        return row_w
+
+    def _install_missing(self):
+        for pkg in PACKAGES_INFO:
+            if not _is_package_installed(pkg["import_name"]):
+                if pkg["pip_name"] not in self._pip_threads:
+                    self._install_package(pkg)
+
+    def _install_package(self, pkg: dict):
+        pip_name = pkg["pip_name"]
+        if pip_name in self._pip_threads:
+            return
+        row = self._pkg_rows.get(pip_name, {})
+        if row.get("btn"):
+            row["btn"].setEnabled(False)
+        if row.get("action_lbl"):
+            row["action_lbl"].setText("Скачиваю…")
+        t = PipThread("install", pip_name)
+        t.done.connect(self._on_pip_done)
+        self._pip_threads[pip_name] = t
+        t.start()
+
+    def _uninstall_package(self, pkg: dict):
+        pip_name = pkg["pip_name"]
+        if pip_name in self._pip_threads:
+            return
+        row = self._pkg_rows.get(pip_name, {})
+        if row.get("btn"):
+            row["btn"].setEnabled(False)
+        if row.get("action_lbl"):
+            row["action_lbl"].setText("Удаляю…")
+        t = PipThread("uninstall", pip_name)
+        t.done.connect(self._on_pip_done)
+        self._pip_threads[pip_name] = t
+        t.start()
+
+    def _on_pip_done(self, pip_name: str, success: bool, message: str):
+        self._pip_threads.pop(pip_name, None)
+        row = self._pkg_rows.get(pip_name, {})
+        if not row:
+            return
+        pkg       = row["pkg"]
+        installed = _is_package_installed(pkg["import_name"])
+        c         = get_colors(self._theme)
+
+        # Обновляем иконку
+        if row.get("status_lbl"):
+            row["status_lbl"].setText("✅" if installed else "❌")
+
+        # Обновляем кнопку
+        btn = row.get("btn")
+        if btn:
+            btn.setEnabled(True)
+            if installed:
+                btn.setText("🗑 Удалить")
+                btn.setStyleSheet(
+                    "QPushButton{background:#3a1a1a;color:#f44336;border:none;"
+                    "border-radius:5px;font-size:11px;padding:0 10px;}"
+                    "QPushButton:hover{background:#5a2020;}"
+                    "QPushButton:disabled{background:#222;color:#555;}"
+                )
+                try:
+                    btn.clicked.disconnect()
+                except Exception:
+                    pass
+                btn.clicked.connect(lambda _, p=pkg: self._uninstall_package(p))
+            else:
+                btn.setText("⬇ Установить")
+                btn.setStyleSheet(
+                    f"QPushButton{{background:{c['accent_blue']};color:#fff;border:none;"
+                    f"border-radius:5px;font-size:11px;padding:0 10px;}}"
+                    f"QPushButton:hover{{background:{c['accent_blue']}cc;}}"
+                    f"QPushButton:disabled{{background:#1a2a3a;color:#555;}}"
+                )
+                try:
+                    btn.clicked.disconnect()
+                except Exception:
+                    pass
+                btn.clicked.connect(lambda _, p=pkg: self._install_package(p))
+
+        if row.get("action_lbl"):
+            row["action_lbl"].setText("✅ Готово" if success else f"❌ {message[:40]}")
 
     # ── Сохранение ────────────────────────────────────────────────────────
 

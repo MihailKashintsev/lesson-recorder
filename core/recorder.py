@@ -106,29 +106,46 @@ class Recorder(QThread):
                         default_speakers = dev
                         break
 
+            # ✅ ИСПРАВЛЕНО: maxInputChannels у loopback может быть 0;
+            # безопаснее брать из defaultOutputDevice количество каналов = 2.
+            n_ch     = max(int(default_speakers.get("maxInputChannels", 0)), 1)
+            src_rate = int(default_speakers["defaultSampleRate"])
+            # Ограничиваем до 2 каналов — Whisper всё равно нужно моно
+            record_ch = min(n_ch, 2)
+
             stream = pa.open(
                 format=pyaudio.paInt16,
-                channels=default_speakers.get("maxInputChannels", 2),
-                rate=int(default_speakers["defaultSampleRate"]),
+                channels=record_ch,
+                rate=src_rate,
                 input=True,
                 input_device_index=default_speakers["index"],
                 frames_per_buffer=CHUNK,
             )
             frames = []
-            src_rate = int(default_speakers["defaultSampleRate"])
             while not self._stop_event.is_set():
                 data = stream.read(CHUNK, exception_on_overflow=False)
-                arr = np.frombuffer(data, dtype=np.int16)
+                arr = np.frombuffer(data, dtype=np.int16).copy()
                 level = np.abs(arr).mean() / 32768.0
                 self.level_updated.emit(float(level))
                 frames.append(arr)
             stream.stop_stream()
             stream.close()
 
+            if not frames:
+                self.error_occurred.emit("Системный звук: данные не получены")
+                return
+
             audio = np.concatenate(frames)
-            if default_speakers.get("maxInputChannels", 2) > 1:
-                audio = audio.reshape(-1, default_speakers["maxInputChannels"])
-                audio = audio.mean(axis=1).astype(np.int16)
+
+            # Stereo → Mono
+            if record_ch > 1:
+                # Количество сэмплов должно делиться на record_ch
+                remainder = len(audio) % record_ch
+                if remainder:
+                    audio = audio[:-remainder]
+                audio = audio.reshape(-1, record_ch).mean(axis=1).astype(np.int16)
+
+            # Ресемплинг до 16000 Гц
             if src_rate != SAMPLE_RATE:
                 audio = self._resample(audio, src_rate, SAMPLE_RATE)
 
@@ -169,27 +186,36 @@ class Recorder(QThread):
                                 dev["name"] == spk["name"] + " [Loopback]"):
                             spk = dev
                             break
+                src_rate  = int(spk["defaultSampleRate"])
+                n_ch      = max(int(spk.get("maxInputChannels", 0)), 1)
+                record_ch = min(n_ch, 2)
                 stream = pa.open(
                     format=pyaudio.paInt16,
-                    channels=spk.get("maxInputChannels", 2),
-                    rate=int(spk["defaultSampleRate"]),
+                    channels=record_ch,
+                    rate=src_rate,
                     input=True,
                     input_device_index=spk["index"],
                     frames_per_buffer=CHUNK,
                 )
-                src_rate = int(spk["defaultSampleRate"])
-                n_ch = spk.get("maxInputChannels", 2)
+                local_frames = []
                 while not self._stop_event.is_set():
                     data = stream.read(CHUNK, exception_on_overflow=False)
-                    arr = np.frombuffer(data, dtype=np.int16)
-                    if n_ch > 1:
-                        arr = arr.reshape(-1, n_ch).mean(axis=1).astype(np.int16)
-                    if src_rate != SAMPLE_RATE:
-                        arr = self._resample(arr, src_rate, SAMPLE_RATE)
-                    sys_frames.append(arr)
+                    arr = np.frombuffer(data, dtype=np.int16).copy()
+                    local_frames.append(arr)
                 stream.stop_stream()
                 stream.close()
                 pa.terminate()
+
+                if local_frames:
+                    audio = np.concatenate(local_frames)
+                    if record_ch > 1:
+                        remainder = len(audio) % record_ch
+                        if remainder:
+                            audio = audio[:-remainder]
+                        audio = audio.reshape(-1, record_ch).mean(axis=1).astype(np.int16)
+                    if src_rate != SAMPLE_RATE:
+                        audio = self._resample(audio, src_rate, SAMPLE_RATE)
+                    sys_frames.append(audio)
             except Exception:
                 pass
             finally:

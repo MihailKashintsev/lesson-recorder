@@ -76,8 +76,16 @@ class Transcriber(QThread):
 
             stderr_output = self._process.stderr.read().strip()
             if self._process.returncode != 0 and not result_text:
-                error_msg = stderr_output or f"Процесс завершился с кодом {self._process.returncode}"
-                self.error_occurred.emit(f"Ошибка транскрипции:\n{error_msg}")
+                # Показываем stderr если есть — там реальная причина
+                detail = stderr_output if stderr_output else f"код {self._process.returncode}"
+                # Код 3221226505 = 0xC0000409 = STATUS_STACK_BUFFER_OVERRUN (AVX2/ctranslate2)
+                if self._process.returncode == 3221226505:
+                    detail = (
+                        "Нативный краш ctranslate2 (код 0xC0000409).\n"
+                        "Вероятно CPU не поддерживает AVX2 инструкции.\n"
+                        "Попробуй: pip install --upgrade faster-whisper ctranslate2"
+                    )
+                self.error_occurred.emit(f"Ошибка транскрипции:\n{detail}")
                 return
 
             self.finished.emit(result_text)

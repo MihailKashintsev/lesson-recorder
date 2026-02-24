@@ -187,14 +187,28 @@ class CameraDialog(QDialog):
 class LangSelectorWidget(QWidget):
     selection_changed = pyqtSignal()
     install_requested = pyqtSignal()
-    refresh_requested = pyqtSignal()   # новый сигнал — кнопка Обновить
+    refresh_requested = pyqtSignal()
 
     def __init__(self, installed_langs: list[str], parent=None):
         super().__init__(parent)
-        self._checkboxes: dict[str, QCheckBox] = {}
-        self._summary_lbl = QLabel()
+        self._checkboxes:  dict[str, QCheckBox] = {}
+        self._summary_lbl  = QLabel()
+        self._install_btn  = None   # ссылка для блокировки
+        self._refresh_btn  = None
+        self._checking     = False
         QVBoxLayout(self)
         self._build(installed_langs)
+
+    def set_checking(self, checking: bool):
+        """Блокирует кнопки пока идёт фоновая проверка Tesseract."""
+        self._checking = checking
+        if self._install_btn:
+            self._install_btn.setEnabled(not checking)
+            self._install_btn.setText(
+                "🔍 Проверяю…" if checking else "🌍 Установить языки…"
+            )
+        if self._refresh_btn:
+            self._refresh_btn.setEnabled(not checking)
 
     def _build(self, installed_langs: list[str]):
         layout = self.layout()
@@ -226,8 +240,10 @@ class LangSelectorWidget(QWidget):
         refresh_btn.setStyleSheet(
             "QPushButton{background:#2a3a2a;color:#4caf50;border:1px solid #3a5a3a;"
             "border-radius:4px;padding:0 8px;font-size:11px;}"
-            "QPushButton:hover{background:#3a5a3a;color:#6adf6a;}")
+            "QPushButton:hover{background:#3a5a3a;color:#6adf6a;}"
+            "QPushButton:disabled{background:#1a1a1a;color:#555;border-color:#333;}")
         refresh_btn.clicked.connect(self.refresh_requested.emit)
+        self._refresh_btn = refresh_btn
         hdr.addWidget(refresh_btn)
 
         if installed_langs:
@@ -238,10 +254,15 @@ class LangSelectorWidget(QWidget):
                 b.clicked.connect(fn)
                 hdr.addWidget(b)
 
-        install_btn = QPushButton("🌍 Установить языки…")
+        install_btn = QPushButton("🔍 Проверяю…" if self._checking else "🌍 Установить языки…")
         install_btn.setFixedHeight(22)
-        install_btn.setStyleSheet("QPushButton{background:#27ae60;color:white;border:none;border-radius:4px;padding:0 10px;font-size:11px;}QPushButton:hover{background:#2ecc71;}")
+        install_btn.setEnabled(not self._checking)
+        install_btn.setStyleSheet(
+            "QPushButton{background:#27ae60;color:white;border:none;border-radius:4px;padding:0 10px;font-size:11px;}"
+            "QPushButton:hover{background:#2ecc71;}"
+            "QPushButton:disabled{background:#1a3a2a;color:#555;}")
         install_btn.clicked.connect(self.install_requested.emit)
+        self._install_btn = install_btn
         hdr.addWidget(install_btn)
         layout.addLayout(hdr)
 
@@ -363,6 +384,9 @@ class PhotoOcrDialog(QDialog):
         # поиск Tesseract идёт в фоновом потоке.
         self._build_ui()
 
+        # Блокируем кнопки пока идёт проверка
+        self._lang_sel.set_checking(True)
+
         self._init_thread = TesseractInitThread(self)
         self._init_thread.ready.connect(self._on_tess_ready)
         self._init_thread.start()
@@ -371,6 +395,7 @@ class PhotoOcrDialog(QDialog):
         """Вызывается из фонового потока когда Tesseract найден/не найден."""
         self._tess_ok   = tess_ok
         self._installed = installed
+        self._lang_sel.set_checking(False)    # ← разблокируем кнопки
         self._lang_sel.reload(installed)
         self._upd_btn()
 
@@ -383,7 +408,7 @@ class PhotoOcrDialog(QDialog):
         else:
             self._ocr_status.setStyleSheet("color:#ffb300; font-size:12px;")
             self._ocr_status.setText(
-                "⚠️ Tesseract не найден. Установи: github.com/UB-Mannheim/tesseract/wiki"
+                "⚠️ Tesseract не найден. Нажми «Установить языки» → вкладка «Tesseract»"
             )
 
     def _build_ui(self):
@@ -509,6 +534,7 @@ class PhotoOcrDialog(QDialog):
 
     def _refresh_langs(self):
         """Перечитывает tessdata в фоне — не блокирует UI."""
+        self._lang_sel.set_checking(True)     # ← блокируем на время
         self._ocr_status.setStyleSheet("color:#888; font-size:12px;")
         self._ocr_status.setText("🔄 Ищу Tesseract и языковые пакеты…")
         self._init_thread = TesseractInitThread(self)
