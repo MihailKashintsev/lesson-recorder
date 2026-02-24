@@ -3,6 +3,7 @@
 Полностью изолировано от Qt — совместимо с Python 3.13.
 """
 import sys
+import os
 import json
 import subprocess
 from pathlib import Path
@@ -42,6 +43,16 @@ class Transcriber(QThread):
                 self.language,
             ]
 
+            # CREATE_NO_WINDOW — не показывать консольное окно на Windows
+            creation_flags = 0
+            if sys.platform == "win32":
+                creation_flags = subprocess.CREATE_NO_WINDOW
+
+            # Передаём CT2_FORCE_CPU_ISA в окружение воркера
+            env = os.environ.copy()
+            env.setdefault("CT2_FORCE_CPU_ISA", "SSE2")
+            env.setdefault("OMP_NUM_THREADS", "2")
+
             self._process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -49,6 +60,8 @@ class Transcriber(QThread):
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                creationflags=creation_flags,
+                env=env,
             )
 
             result_text = ""

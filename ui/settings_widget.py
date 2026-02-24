@@ -93,6 +93,73 @@ def _is_package_installed(import_name: str) -> bool:
     return importlib.util.find_spec(root) is not None
 
 
+def _find_python_exe() -> str:
+    """
+    Возвращает путь к реальному python.exe.
+    В PyInstaller-бандле sys.executable = LessonRecorder.exe, а не python.exe —
+    запускать его с '-m pip' открывает приложение заново.
+    """
+    import shutil
+
+    # 1. Если НЕ бандл PyInstaller — sys.executable и есть python
+    if not getattr(sys, "frozen", False):
+        return sys.executable
+
+    # 2. PyInstaller-бандл: ищем python.exe рядом с exe или в PATH
+    exe_dir = Path(sys.executable).parent
+
+    # Рядом с приложением (если python поставлен туда же)
+    for name in ("python.exe", "python3.exe", "python311.exe", "python312.exe", "python313.exe"):
+        candidate = exe_dir / name
+        if candidate.exists():
+            return str(candidate)
+
+    # В PATH
+    for name in ("python", "python3"):
+        found = shutil.which(name)
+        if found and "LessonRecorder" not in found:
+            return found
+
+    # Стандартные пути установки Python на Windows
+    import winreg
+    try:
+        for hive in [winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE]:
+            for sub in [
+                r"SOFTWARE\Python\PythonCore",
+                r"SOFTWARE\WOW6432Node\Python\PythonCore",
+            ]:
+                try:
+                    with winreg.OpenKey(hive, sub) as key:
+                        for i in range(winreg.QueryInfoKey(key)[0]):
+                            ver = winreg.EnumKey(key, i)
+                            try:
+                                with winreg.OpenKey(key, rf"{ver}\InstallPath") as kp:
+                                    install_dir, _ = winreg.QueryValueEx(kp, "ExecutablePath")
+                                    if install_dir and Path(install_dir).exists():
+                                        return install_dir
+                            except OSError:
+                                pass
+                except OSError:
+                    pass
+    except ImportError:
+        pass
+
+    # Последний шанс — стандартные пути
+    for p in [
+        r"C:\Python313\python.exe",
+        r"C:\Python312\python.exe",
+        r"C:\Python311\python.exe",
+        r"C:\Users\Public\Python\python.exe",
+    ]:
+        if Path(p).exists():
+            return p
+
+    raise RuntimeError(
+        "Не удалось найти python.exe.\n"
+        "Убедись что Python установлен и доступен в PATH."
+    )
+
+
 class PipThread(QThread):
     """Устанавливает или удаляет pip-пакет в фоновом потоке."""
     done = pyqtSignal(str, bool, str)   # (pip_name, success, message)
@@ -104,17 +171,33 @@ class PipThread(QThread):
 
     def run(self):
         try:
+            python = _find_python_exe()
+        except RuntimeError as e:
+            self.done.emit(self.pip_name, False, str(e))
+            return
+
+        try:
             if self.action == "install":
-                cmd = [sys.executable, "-m", "pip", "install", self.pip_name, "--quiet",
-                       "--disable-pip-version-check"]
+                cmd = [python, "-m", "pip", "install", self.pip_name,
+                       "--quiet", "--disable-pip-version-check"]
             else:
-                cmd = [sys.executable, "-m", "pip", "uninstall", self.pip_name,
+                cmd = [python, "-m", "pip", "uninstall", self.pip_name,
                        "-y", "--quiet"]
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+
+            # CREATE_NO_WINDOW — не показывать консольное окно на Windows
+            creation_flags = 0
+            if sys.platform == "win32":
+                creation_flags = subprocess.CREATE_NO_WINDOW
+
+            r = subprocess.run(
+                cmd,
+                capture_output=True, text=True, timeout=300,
+                creationflags=creation_flags,
+            )
             if r.returncode == 0:
                 self.done.emit(self.pip_name, True, "")
             else:
-                err = (r.stderr or r.stdout or "Неизвестная ошибка")[:300]
+                err = (r.stderr or r.stdout or "Неизвестная ошибка")[:400]
                 self.done.emit(self.pip_name, False, err)
         except Exception as e:
             self.done.emit(self.pip_name, False, str(e))
