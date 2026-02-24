@@ -127,10 +127,33 @@ Write-Ok "Tag $tag created"
 
 # Push
 Write-Step "Pushing to GitHub"
-git push origin master 2>$null
-if ($LASTEXITCODE -ne 0) { git push origin main }
-git push origin $tag
-Write-Ok "Pushed"
+
+# Determine current branch
+$branch = git rev-parse --abbrev-ref HEAD 2>$null
+if (-not $branch) { $branch = "master" }
+
+# Push commits — git writes progress to stderr even on success, so we capture it
+$pushOut = git push origin $branch 2>&1
+if ($LASTEXITCODE -ne 0) {
+    # Check if it actually failed or just printed info to stderr
+    $errText = $pushOut | Out-String
+    if ($errText -match "error:|fatal:") {
+        Write-Host $errText -ForegroundColor Red
+        Write-Fail "Failed to push commits"
+    }
+}
+Write-Ok "Commits pushed (branch: $branch)"
+
+# Push tag
+$tagOut = git push origin $tag 2>&1
+if ($LASTEXITCODE -ne 0) {
+    $errText = $tagOut | Out-String
+    if ($errText -match "error:|fatal:") {
+        Write-Host $errText -ForegroundColor Red
+        Write-Fail "Failed to push tag $tag"
+    }
+}
+Write-Ok "Tag $tag pushed"
 
 $remote  = git remote get-url origin
 $repoUrl = $remote -replace "\.git$", ""
