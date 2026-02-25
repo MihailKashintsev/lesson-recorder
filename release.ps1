@@ -129,31 +129,30 @@ Write-Ok "Tag $tag created"
 Write-Step "Pushing to GitHub"
 
 # Determine current branch
-$branch = git rev-parse --abbrev-ref HEAD 2>$null
+$branch = git rev-parse --abbrev-ref HEAD
 if (-not $branch) { $branch = "master" }
 
-# Push commits — git writes progress to stderr even on success, so we capture it
-$pushOut = git push origin $branch 2>&1
-if ($LASTEXITCODE -ne 0) {
-    # Check if it actually failed or just printed info to stderr
-    $errText = $pushOut | Out-String
-    if ($errText -match "error:|fatal:") {
-        Write-Host $errText -ForegroundColor Red
-        Write-Fail "Failed to push commits"
-    }
-}
-Write-Ok "Commits pushed (branch: $branch)"
+# Git always writes progress info to stderr even on success.
+# $ErrorActionPreference="Stop" treats ANY stderr output as fatal error,
+# so we temporarily suspend it around git push calls.
+$savedPref = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+
+# Push commits
+Write-Host "  Pushing branch $branch..." -ForegroundColor Gray
+git push origin $branch
+$pushCode = $LASTEXITCODE
 
 # Push tag
-$tagOut = git push origin $tag 2>&1
-if ($LASTEXITCODE -ne 0) {
-    $errText = $tagOut | Out-String
-    if ($errText -match "error:|fatal:") {
-        Write-Host $errText -ForegroundColor Red
-        Write-Fail "Failed to push tag $tag"
-    }
-}
-Write-Ok "Tag $tag pushed"
+Write-Host "  Pushing tag $tag..." -ForegroundColor Gray
+git push origin $tag
+$tagCode = $LASTEXITCODE
+
+$ErrorActionPreference = $savedPref
+
+if ($pushCode -ne 0) { Write-Fail "Failed to push commits (exit code $pushCode)" }
+if ($tagCode  -ne 0) { Write-Fail "Failed to push tag $tag (exit code $tagCode)" }
+Write-Ok "Pushed branch $branch and tag $tag"
 
 $remote  = git remote get-url origin
 $repoUrl = $remote -replace "\.git$", ""
