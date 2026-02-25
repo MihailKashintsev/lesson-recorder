@@ -62,9 +62,12 @@ jobs:
           iscc installer\setup.iss
           # Переименовываем с версией
           $src = Get-ChildItem "dist\installer\*.exe" | Select-Object -First 1
-          $dst = "dist\installer\LessonRecorder_v${{ steps.version.outputs.VERSION }}_setup.exe"
-          if ($src -and $src.FullName -ne $dst) {
-            Rename-Item $src.FullName $dst -ErrorAction SilentlyContinue
+          if ($src) {
+            $dstName = "LessonRecorder_v${{ steps.version.outputs.VERSION }}_setup.exe"
+            $dstPath = Join-Path $src.DirectoryName $dstName
+            if ($src.FullName -ne $dstPath) {
+              Rename-Item -Path $src.FullName -NewName $dstName -Force
+            }
           }
 
       - name: Find installer
