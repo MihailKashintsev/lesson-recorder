@@ -75,23 +75,41 @@ def find_tesseract_cmd() -> str | None:
 
 
 def _find_tesseract_cmd_uncached() -> str | None:
-    # 1. Фиксированные пути — мгновенно
-    for p in [
-        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-        r"C:\Tesseract-OCR\tesseract.exe",
-        r"C:\Tesseract\tesseract.exe",
-        r"C:\tools\Tesseract-OCR\tesseract.exe",
-    ]:
-        if Path(p).exists():
-            return p
+    # 1. Фиксированные пути Windows — мгновенно
+    if sys.platform == "win32":
+        for p in [
+            r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+            r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+            r"C:\Tesseract-OCR\tesseract.exe",
+            r"C:\Tesseract\tesseract.exe",
+            r"C:\tools\Tesseract-OCR\tesseract.exe",
+        ]:
+            if Path(p).exists():
+                return p
 
-    # 2. PATH — мгновенно
+    # 2. Homebrew macOS (до PATH — шебанги могут не обновить PATH)
+    if sys.platform == "darwin":
+        for p in [
+            "/opt/homebrew/bin/tesseract",   # Apple Silicon
+            "/usr/local/bin/tesseract",       # Intel Mac
+        ]:
+            if Path(p).exists():
+                return p
+
+    # 3. PATH — мгновенно (все платформы)
     found = shutil.which("tesseract")
     if found:
         return found
 
-    # 3. Реестр Windows — быстро
+    # 4. Linux стандартные пути
+    if sys.platform.startswith("linux"):
+        for p in ["/usr/bin/tesseract", "/usr/local/bin/tesseract"]:
+            if Path(p).exists():
+                return p
+
+    # 5. Реестр Windows — быстро
+    if sys.platform != "win32":
+        return None
     try:
         import winreg
         for hive in [winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER]:
@@ -345,30 +363,88 @@ class TesseractInstallerThread(QThread):
         self._cancelled = True
 
     def run(self):
+        if sys.platform == "darwin":
+            self._install_mac()
+        elif sys.platform.startswith("linux"):
+            self._install_linux()
+        else:
+            self._install_windows()
+
+    def _install_mac(self):
+        brew = shutil.which("brew")
+        if not brew:
+            self.error.emit(
+                "Homebrew не найден.\n\n"
+                "Установи Homebrew: https://brew.sh\n"
+                "Затем выполни: brew install tesseract"
+            )
+            return
+        self.status.emit("Устанавливаю Tesseract через Homebrew…")
+        self.progress.emit(10)
+        try:
+            import subprocess as _sp
+            proc = _sp.Popen([brew, "install", "tesseract"],
+                             stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True)
+            for line in proc.stdout:
+                if self._cancelled:
+                    proc.kill(); return
+                self.status.emit(line.strip()[:80])
+            proc.wait()
+            if proc.returncode == 0:
+                self.progress.emit(100)
+                self.finished.emit("")
+            else:
+                self.error.emit(f"Homebrew вернул код {proc.returncode}\nПопробуй: brew install tesseract")
+        except Exception as e:
+            self.error.emit(str(e))
+
+    def _install_linux(self):
+        pkg_managers = [
+            (shutil.which("apt-get"), ["sudo", "apt-get", "install", "-y", "tesseract-ocr"]),
+            (shutil.which("dnf"),     ["sudo", "dnf", "install", "-y", "tesseract"]),
+            (shutil.which("pacman"),  ["sudo", "pacman", "-S", "--noconfirm", "tesseract"]),
+        ]
+        import subprocess as _sp
+        for mgr, cmd in pkg_managers:
+            if mgr:
+                self.status.emit(f"Устанавливаю через {Path(mgr).name}…")
+                try:
+                    proc = _sp.Popen(cmd, stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True)
+                    for line in proc.stdout:
+                        if self._cancelled:
+                            proc.kill(); return
+                        self.status.emit(line.strip()[:80])
+                    proc.wait()
+                    if proc.returncode == 0:
+                        self.progress.emit(100); self.finished.emit("")
+                    else:
+                        self.error.emit(f"Менеджер пакетов вернул код {proc.returncode}")
+                except Exception as e:
+                    self.error.emit(str(e))
+                return
+        self.error.emit("Не удалось определить менеджер пакетов.\nsudo apt install tesseract-ocr")
+
+    def _install_windows(self):
         import requests
         try:
             self.status.emit("Подключаюсь к серверу…")
             tmp_dir = tempfile.mkdtemp(prefix="lr_tess_")
             dest    = Path(tmp_dir) / "tesseract-installer.exe"
             tmp     = dest.with_suffix(".tmp")
-
             r = requests.get(TESSERACT_INSTALLER_URL, stream=True, timeout=30)
             r.raise_for_status()
-            total      = int(r.headers.get("content-length", 0))
+            total = int(r.headers.get("content-length", 0))
             downloaded = 0
-
             self.status.emit(f"Скачиваю Tesseract {TESSERACT_INSTALLER_VERSION}…")
             with open(tmp, "wb") as f:
                 for chunk in r.iter_content(chunk_size=65536):
                     if self._cancelled:
-                        tmp.unlink(missing_ok=True)
-                        return
+                        tmp.unlink(missing_ok=True); return
                     if chunk:
                         f.write(chunk)
                         downloaded += len(chunk)
                         if total:
                             self.progress.emit(int(downloaded / total * 100))
-
             tmp.rename(dest)
             self.status.emit("Загрузка завершена — запускаю установщик…")
             self.finished.emit(str(dest))
@@ -496,14 +572,20 @@ class TesseractTab(QWidget):
     def _on_downloaded(self, exe_path: str):
         self.pbar.setValue(100)
         self.cancel_btn.setVisible(False)
+        global _tesseract_cmd_cache
+        _tesseract_cmd_cache = False
+        if not exe_path:
+            # Mac/Linux — установка завершена внутри потока
+            self.status_lbl.setText("✅ Tesseract установлен! Перезапустите приложение.")
+            self.installed.emit()
+            self.dl_btn.setEnabled(True)
+            return
+        # Windows — запускаем скачанный .exe
         try:
             subprocess.Popen([exe_path], shell=True)
             self.status_lbl.setText(
                 "✅ Установщик запущен. После установки перезапусти приложение."
             )
-            # Сбрасываем кеш — после установки tesseract будет доступен
-            global _tesseract_cmd_cache
-            _tesseract_cmd_cache = False
             self.installed.emit()
         except Exception as e:
             self.status_lbl.setText(f"❌ Не удалось запустить: {e}")

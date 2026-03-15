@@ -74,11 +74,16 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          # requirements-build.txt — только то что нужно PyInstaller'у.
+          # openai-whisper/torch/llvmlite НЕ ставим в CI — они исключены
+          # из бандла (см. LessonRecorder.spec excludes) и устанавливаются
+          # пользователем при первом запуске приложения.
+          pip install -r requirements-build.txt
           pip install pyinstaller packaging
 
       - name: Install Windows-only packages
         if: matrix.platform == 'windows'
+        # PyAudioWPatch — WASAPI loopback, только Windows
         run: pip install PyAudioWPatch
 
       # ── Версия ────────────────────────────────────────────────────────
@@ -249,10 +254,16 @@ jobs:
         id: artifact_mac
         shell: bash
         run: |
-          # Ищем .zip (новый формат) или .dmg (старый)
-          f=$(ls dist/*.zip dist/*.dmg 2>/dev/null | head -1)
+          # Ищем zip или dmg, используем find чтобы не падать если файла нет
+          f=$(find dist -maxdepth 1 \( -name "*.zip" -o -name "*.dmg" \) | head -1)
+          if [[ -z "$f" ]]; then
+            echo "ERROR: no .zip or .dmg found in dist/"
+            ls -la dist/
+            exit 1
+          fi
           echo "PATH=$f"             >> "$GITHUB_OUTPUT"
           echo "NAME=$(basename $f)" >> "$GITHUB_OUTPUT"
+          echo "Found: $f"
 
       - name: Find artifact (Linux)
         if: matrix.platform == 'linux'

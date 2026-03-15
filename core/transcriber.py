@@ -41,34 +41,53 @@ _worker_tmp_path: str | None = None   # кешируем путь к извле�
 def _get_worker_path() -> Path:
     """
     В разработке — путь к .py файлу рядом.
-    В frozen — извлекаем из _MEIPASS во временную папку (один раз).
+    В frozen — ВСЕГДА копируем в /tmp, чтобы избежать AppTranslocation на macOS.
+    macOS запускает неподписанные .app через случайный путь AppTranslocation,
+    поэтому путь внутри bundle недоступен для внешнего Python.
     """
     global _worker_tmp_path
 
     if not getattr(sys, "frozen", False):
         return WORKER_PATH
 
-    if _worker_tmp_path and Path(_worker_tmp_path).exists():
-        return Path(_worker_tmp_path)
+    # Всегда проверяем — tmp файл мог быть удалён
+    tmp_dir = Path(tempfile.gettempdir()) / "lr_worker"
+    dst = tmp_dir / "transcribe_worker.py"
 
-    # Ищем воркер внутри PyInstaller bundle
-    meipass = Path(getattr(sys, "_MEIPASS", ""))
-    src = meipass / "core" / "transcribe_worker.py"
-
-    if not src.exists():
-        # Пробуем рядом с exe
-        src = Path(sys.executable).parent / "core" / "transcribe_worker.py"
-
-    if src.exists():
-        # Копируем во временную папку
-        tmp_dir = Path(tempfile.gettempdir()) / "lr_worker"
-        tmp_dir.mkdir(exist_ok=True)
-        dst = tmp_dir / "transcribe_worker.py"
-        shutil.copy2(src, dst)
-        _worker_tmp_path = str(dst)
+    if _worker_tmp_path and dst.exists():
         return dst
 
-    return WORKER_PATH   # fallback
+    # Ищем воркер в нескольких местах
+    candidates = []
+
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(meipass) / "core" / "transcribe_worker.py")
+
+    # sys.executable на Mac в frozen = .app/Contents/MacOS/LessonRecorder
+    exe_dir = Path(sys.executable).parent
+    candidates += [
+        exe_dir / "core" / "transcribe_worker.py",
+        exe_dir.parent / "Frameworks" / "core" / "transcribe_worker.py",
+        exe_dir.parent / "Resources" / "core" / "transcribe_worker.py",
+    ]
+
+    for src in candidates:
+        if src.exists():
+            try:
+                tmp_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+                _worker_tmp_path = str(dst)
+                return dst
+            except Exception:
+                continue
+
+    # Последний шанс — возвращаем первый существующий путь без копирования
+    for src in candidates:
+        if src.exists():
+            return src
+
+    return WORKER_PATH   # fallback (может не работать в AppTranslocation)
 
 
 def _get_user_python() -> str:

@@ -98,6 +98,7 @@ PACKAGES_INFO = [
         "desc":        "Запись системного звука (WASAPI loopback, только Windows)",
         "used_for":    "🖥 Системный звук",
         "required":    False,
+        "platforms":   ["win32"],
         "github_url":  "https://github.com/s0d3s/PyAudioWPatch",
     },
     {
@@ -1149,8 +1150,14 @@ class SettingsWidget(QWidget):
                 item.widget().deleteLater()
         self._pkg_rows.clear()
 
+        # Фильтруем пакеты по текущей платформе
+        visible_packages = [
+            pkg for pkg in PACKAGES_INFO
+            if not pkg.get("platforms") or sys.platform in pkg["platforms"]
+        ]
+
         # Сначала рисуем все строки с "🔍 проверяю…"
-        for pkg in PACKAGES_INFO:
+        for pkg in visible_packages:
             row_w = self._build_pkg_row(pkg, c, checking=True)
             self._pkg_vbox.addWidget(row_w)
 
@@ -1158,9 +1165,12 @@ class SettingsWidget(QWidget):
         self._start_pkg_check()
 
     def _start_pkg_check(self):
-        """Запускает PkgCheckThread для всех пакетов параллельно."""
+        """Запускает PkgCheckThread для видимых пакетов параллельно."""
         _pip_show_cache.clear()
-        t = PkgCheckThread([p["pip_name"] for p in PACKAGES_INFO])
+        pip_names = list(self._pkg_rows.keys())
+        if not pip_names:
+            return
+        t = PkgCheckThread(pip_names)
         t.pkg_checked.connect(self._on_pkg_checked)
         t.start()
         self._pkg_check_thread = t  # сохраняем чтобы не был GC-собран
@@ -1371,6 +1381,8 @@ class SettingsWidget(QWidget):
 
     def _install_missing(self):
         for pkg in PACKAGES_INFO:
+            if pkg.get("platforms") and sys.platform not in pkg["platforms"]:
+                continue
             if not _is_package_installed(pkg["pip_name"], pkg["import_name"]):
                 self._install_by_name(pkg["pip_name"])
 
@@ -1415,7 +1427,14 @@ class SettingsWidget(QWidget):
         self._uninstall_by_name(pkg["pip_name"])
 
     def _on_pip_done(self, pip_name: str, success: bool, output: str):
-        self._pip_threads.pop(pip_name, None)
+        # Не удаляем поток сразу — ждём QThread.finished чтобы избежать SIGABRT
+        t = self._pip_threads.get(pip_name)
+        if t:
+            try:
+                t.finished.disconnect()
+            except Exception:
+                pass
+            t.finished.connect(lambda pn=pip_name: self._pip_threads.pop(pn, None))
         row = self._pkg_rows.get(pip_name)
         if not row:
             return
@@ -1453,8 +1472,6 @@ class SettingsWidget(QWidget):
         row = self._pkg_rows.get(pip_name)
         if row:
             row["action_lbl"].setText("✅ Готово")
-        # Убираем временную ссылку
-        self._pip_threads.pop(f"__recheck_{pip_name}", None)
 
     def _show_pip_log(self, pip_name: str, success: bool, output: str):
         """Показывает диалог с полным выводом pip."""
