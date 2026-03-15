@@ -98,7 +98,6 @@ PACKAGES_INFO = [
         "desc":        "Запись системного звука (WASAPI loopback, только Windows)",
         "used_for":    "🖥 Системный звук",
         "required":    False,
-        "platforms":   ["win32"],
         "github_url":  "https://github.com/s0d3s/PyAudioWPatch",
     },
     {
@@ -981,8 +980,10 @@ class SettingsWidget(QWidget):
         return group
 
     def _build_tesseract_row(self, c: dict) -> QWidget:
-        """Строка Tesseract OCR — проверяется через shutil.which + реестр, не pip."""
+        """Строка Tesseract OCR — проверка через which/Homebrew/реестр."""
+        import webbrowser as _wb
         from core.tesseract_langs import find_tesseract_cmd
+        from pathlib import Path as _P
 
         row_w = QWidget(); row_w.setStyleSheet("background:transparent;")
         outer = QVBoxLayout(row_w)
@@ -996,6 +997,11 @@ class SettingsWidget(QWidget):
 
         tess_path = find_tesseract_cmd()
         installed = bool(tess_path)
+
+        # Определяем — установлен через нашу программу или внешний
+        # "наш" — только языковые данные в ~/.lesson_recorder/tessdata/
+        # Сам бинарник tesseract ВСЕГДА внешний (brew/apt/winget)
+        is_external = installed  # бинарник всегда внешний
 
         status_lbl = QLabel("✅" if installed else "❌")
         status_lbl.setFixedWidth(22)
@@ -1014,7 +1020,7 @@ class SettingsWidget(QWidget):
         nw = QWidget(); nw.setStyleSheet("background:transparent;"); nw.setLayout(name_row)
         hl.addWidget(nw, stretch=1)
 
-        def _small_btn(icon: str, tip: str) -> QPushButton:
+        def _small_btn(icon: str, tip: str, url: str = "") -> QPushButton:
             b = QPushButton(icon)
             b.setFixedSize(26, 26)
             b.setToolTip(tip)
@@ -1023,17 +1029,27 @@ class SettingsWidget(QWidget):
                 f"QPushButton{{background:{c['bg_input']};color:{c['text_muted']};"
                 f"border:1px solid {c['border']};border-radius:5px;font-size:12px;padding:0;}}"
                 f"QPushButton:hover{{background:{c['bg_hover']};color:{c['text']};}}")
+            if url:
+                b.clicked.connect(lambda: _wb.open(url))
             return b
 
-        btn_copy = _small_btn("⌨", "Скопировать команду установки")
-        btn_copy.clicked.connect(lambda: self._copy_pip_cmd(
-            "winget install UB-Mannheim.TesseractOCR  # или скачай с github.com/UB-Mannheim/tesseract/wiki"))
-        hl.addWidget(btn_copy)
-
-        btn_gh = _small_btn("🐙", "Открыть GitHub Tesseract")
-        btn_gh.clicked.connect(lambda: __import__("webbrowser").open(
-            "https://github.com/UB-Mannheim/tesseract/wiki"))
-        hl.addWidget(btn_gh)
+        # Кнопка-ссылка зависит от платформы
+        if sys.platform == "darwin":
+            btn_link = _small_btn("🌐", "Открыть brew.sh в браузере", "https://brew.sh")
+            btn_doc  = _small_btn("📖", "Документация Tesseract",
+                                  "https://formulae.brew.sh/formula/tesseract")
+        elif sys.platform.startswith("linux"):
+            btn_link = _small_btn("🌐", "Tesseract на GitHub",
+                                  "https://github.com/tesseract-ocr/tesseract")
+            btn_doc  = _small_btn("📖", "Инструкция по установке",
+                                  "https://tesseract-ocr.github.io/tessdoc/Installation.html")
+        else:
+            btn_link = _small_btn("🌐", "Скачать Tesseract (UB-Mannheim)",
+                                  "https://github.com/UB-Mannheim/tesseract/wiki")
+            btn_doc  = _small_btn("📖", "Документация",
+                                  "https://tesseract-ocr.github.io/tessdoc/")
+        hl.addWidget(btn_link)
+        hl.addWidget(btn_doc)
 
         action_lbl = QLabel("")
         action_lbl.setStyleSheet(f"color:{c['text_muted']};font-size:11px;min-width:70px;")
@@ -1041,11 +1057,21 @@ class SettingsWidget(QWidget):
         self._tess_action_lbl = action_lbl
 
         tess_btn = QPushButton()
-        tess_btn.setFixedHeight(26); tess_btn.setMinimumWidth(90)
+        tess_btn.setFixedHeight(26); tess_btn.setMinimumWidth(110)
         self._tess_btn = tess_btn
 
-        if installed:
-            tess_btn.setText("🔍 Найден")
+        if installed and is_external:
+            # Установлен не через нашу программу — кнопка "Перейти к файлу"
+            tess_btn.setText("📁 Перейти к файлу")
+            tess_btn.setStyleSheet(
+                f"QPushButton{{background:{c['bg_input']};color:{c['accent_green']};"
+                f"border:1px solid {c['accent_green']};border-radius:5px;"
+                f"font-size:11px;padding:0 10px;}}"
+                f"QPushButton:hover{{background:{c['bg_hover']};}}")
+            tess_dir = str(_P(tess_path).parent)
+            tess_btn.clicked.connect(lambda: self._open_folder(tess_dir))
+        elif installed:
+            tess_btn.setText("✅ Установлен")
             tess_btn.setEnabled(False)
             tess_btn.setStyleSheet(
                 f"QPushButton{{background:{c['bg_input']};color:{c['text_muted']};"
@@ -1068,15 +1094,13 @@ class SettingsWidget(QWidget):
         desc_row.addWidget(lbl_tess_desc)
 
         path_lbl = QLabel()
-        path_lbl.setStyleSheet(
-            f"color:{c['accent_blue']};font-size:10px;text-decoration:underline;")
         path_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
         if tess_path:
             short = tess_path if len(tess_path) < 55 else "…" + tess_path[-52:]
             path_lbl.setText(short)
             path_lbl.setToolTip(tess_path)
-            import os as _os
-            from pathlib import Path as _P
+            path_lbl.setStyleSheet(
+                f"color:{c['accent_blue']};font-size:10px;text-decoration:underline;")
             tess_dir = str(_P(tess_path).parent)
             path_lbl.mousePressEvent = lambda e, d=tess_dir: self._open_folder(d)
         else:
@@ -1092,18 +1116,28 @@ class SettingsWidget(QWidget):
     def _install_tesseract(self):
         """Открывает диалог установки Tesseract."""
         try:
-            from core.tesseract_langs import TesseractLangsDialog
-            dlg = TesseractLangsDialog(parent=self)
+            from core.tesseract_langs import LangInstallDialog
+            dlg = LangInstallDialog(parent=self)
             dlg.exec()
-            # После закрытия — перепроверяем
             self._recheck_tesseract()
         except Exception as e:
+            import webbrowser as _wb
             from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.information(self, "Tesseract",
-                f"Установи Tesseract вручную:\n"
-                f"  winget install UB-Mannheim.TesseractOCR\n"
-                f"или скачай с:\n"
-                f"  github.com/UB-Mannheim/tesseract/wiki\n\n{e}")
+            if sys.platform == "darwin":
+                msg = "Установи Tesseract через Homebrew:\n  brew install tesseract\n\nИли открыть brew.sh в браузере?"
+                reply = QMessageBox.question(self, "Tesseract", msg)
+                if reply == QMessageBox.StandardButton.Yes:
+                    _wb.open("https://brew.sh")
+            elif sys.platform.startswith("linux"):
+                msg = "Установи Tesseract:\n  sudo apt install tesseract-ocr\n\nОткрыть инструкцию?"
+                reply = QMessageBox.question(self, "Tesseract", msg)
+                if reply == QMessageBox.StandardButton.Yes:
+                    _wb.open("https://tesseract-ocr.github.io/tessdoc/Installation.html")
+            else:
+                msg = "Скачай Tesseract с официального сайта?\n(UB-Mannheim репозиторий)"
+                reply = QMessageBox.question(self, "Tesseract", msg)
+                if reply == QMessageBox.StandardButton.Yes:
+                    _wb.open("https://github.com/UB-Mannheim/tesseract/wiki")
 
     def _recheck_tesseract(self):
         """Перепроверяет наличие Tesseract и обновляет UI."""
@@ -1129,12 +1163,18 @@ class SettingsWidget(QWidget):
                 self._tess_path_lbl.setText("не найден")
                 self._tess_path_lbl.setStyleSheet("color:#f44336;font-size:10px;")
         if hasattr(self, "_tess_btn") and tess_path:
-            self._tess_btn.setText("🔍 Найден")
-            self._tess_btn.setEnabled(False)
+            from pathlib import Path as _P2
+            tess_dir = str(_P2(tess_path).parent)
+            self._tess_btn.setText("📁 Перейти к файлу")
+            self._tess_btn.setEnabled(True)
             self._tess_btn.setStyleSheet(
-                f"QPushButton{{background:{c['bg_input']};color:{c['text_muted']};"
-                f"border:1px solid {c['border']};border-radius:5px;"
-                f"font-size:11px;padding:0 10px;}}")
+                f"QPushButton{{background:{c['bg_input']};color:{c['accent_green']};"
+                f"border:1px solid {c['accent_green']};border-radius:5px;"
+                f"font-size:11px;padding:0 10px;}}"
+                f"QPushButton:hover{{background:{c['bg_hover']};}}")
+            try: self._tess_btn.clicked.disconnect()
+            except Exception: pass
+            self._tess_btn.clicked.connect(lambda: self._open_folder(tess_dir))
         if hasattr(self, "_tess_action_lbl") and tess_path:
             self._tess_action_lbl.setText("✅ Готово")
 
@@ -1150,14 +1190,8 @@ class SettingsWidget(QWidget):
                 item.widget().deleteLater()
         self._pkg_rows.clear()
 
-        # Фильтруем пакеты по текущей платформе
-        visible_packages = [
-            pkg for pkg in PACKAGES_INFO
-            if not pkg.get("platforms") or sys.platform in pkg["platforms"]
-        ]
-
         # Сначала рисуем все строки с "🔍 проверяю…"
-        for pkg in visible_packages:
+        for pkg in PACKAGES_INFO:
             row_w = self._build_pkg_row(pkg, c, checking=True)
             self._pkg_vbox.addWidget(row_w)
 
@@ -1165,12 +1199,9 @@ class SettingsWidget(QWidget):
         self._start_pkg_check()
 
     def _start_pkg_check(self):
-        """Запускает PkgCheckThread для видимых пакетов параллельно."""
+        """Запускает PkgCheckThread для всех пакетов параллельно."""
         _pip_show_cache.clear()
-        pip_names = list(self._pkg_rows.keys())
-        if not pip_names:
-            return
-        t = PkgCheckThread(pip_names)
+        t = PkgCheckThread([p["pip_name"] for p in PACKAGES_INFO])
         t.pkg_checked.connect(self._on_pkg_checked)
         t.start()
         self._pkg_check_thread = t  # сохраняем чтобы не был GC-собран
@@ -1381,8 +1412,6 @@ class SettingsWidget(QWidget):
 
     def _install_missing(self):
         for pkg in PACKAGES_INFO:
-            if pkg.get("platforms") and sys.platform not in pkg["platforms"]:
-                continue
             if not _is_package_installed(pkg["pip_name"], pkg["import_name"]):
                 self._install_by_name(pkg["pip_name"])
 
@@ -1427,14 +1456,7 @@ class SettingsWidget(QWidget):
         self._uninstall_by_name(pkg["pip_name"])
 
     def _on_pip_done(self, pip_name: str, success: bool, output: str):
-        # Не удаляем поток сразу — ждём QThread.finished чтобы избежать SIGABRT
-        t = self._pip_threads.get(pip_name)
-        if t:
-            try:
-                t.finished.disconnect()
-            except Exception:
-                pass
-            t.finished.connect(lambda pn=pip_name: self._pip_threads.pop(pn, None))
+        self._pip_threads.pop(pip_name, None)
         row = self._pkg_rows.get(pip_name)
         if not row:
             return
@@ -1472,6 +1494,8 @@ class SettingsWidget(QWidget):
         row = self._pkg_rows.get(pip_name)
         if row:
             row["action_lbl"].setText("✅ Готово")
+        # Убираем временную ссылку
+        self._pip_threads.pop(f"__recheck_{pip_name}", None)
 
     def _show_pip_log(self, pip_name: str, success: bool, output: str):
         """Показывает диалог с полным выводом pip."""

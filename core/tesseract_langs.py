@@ -75,41 +75,23 @@ def find_tesseract_cmd() -> str | None:
 
 
 def _find_tesseract_cmd_uncached() -> str | None:
-    # 1. Фиксированные пути Windows — мгновенно
-    if sys.platform == "win32":
-        for p in [
-            r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-            r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-            r"C:\Tesseract-OCR\tesseract.exe",
-            r"C:\Tesseract\tesseract.exe",
-            r"C:\tools\Tesseract-OCR\tesseract.exe",
-        ]:
-            if Path(p).exists():
-                return p
+    # 1. Фиксированные пути — мгновенно
+    for p in [
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+        r"C:\Tesseract-OCR\tesseract.exe",
+        r"C:\Tesseract\tesseract.exe",
+        r"C:\tools\Tesseract-OCR\tesseract.exe",
+    ]:
+        if Path(p).exists():
+            return p
 
-    # 2. Homebrew macOS (до PATH — шебанги могут не обновить PATH)
-    if sys.platform == "darwin":
-        for p in [
-            "/opt/homebrew/bin/tesseract",   # Apple Silicon
-            "/usr/local/bin/tesseract",       # Intel Mac
-        ]:
-            if Path(p).exists():
-                return p
-
-    # 3. PATH — мгновенно (все платформы)
+    # 2. PATH — мгновенно
     found = shutil.which("tesseract")
     if found:
         return found
 
-    # 4. Linux стандартные пути
-    if sys.platform.startswith("linux"):
-        for p in ["/usr/bin/tesseract", "/usr/local/bin/tesseract"]:
-            if Path(p).exists():
-                return p
-
-    # 5. Реестр Windows — быстро
-    if sys.platform != "win32":
-        return None
+    # 3. Реестр Windows — быстро
     try:
         import winreg
         for hive in [winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER]:
@@ -363,88 +345,30 @@ class TesseractInstallerThread(QThread):
         self._cancelled = True
 
     def run(self):
-        if sys.platform == "darwin":
-            self._install_mac()
-        elif sys.platform.startswith("linux"):
-            self._install_linux()
-        else:
-            self._install_windows()
-
-    def _install_mac(self):
-        brew = shutil.which("brew")
-        if not brew:
-            self.error.emit(
-                "Homebrew не найден.\n\n"
-                "Установи Homebrew: https://brew.sh\n"
-                "Затем выполни: brew install tesseract"
-            )
-            return
-        self.status.emit("Устанавливаю Tesseract через Homebrew…")
-        self.progress.emit(10)
-        try:
-            import subprocess as _sp
-            proc = _sp.Popen([brew, "install", "tesseract"],
-                             stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True)
-            for line in proc.stdout:
-                if self._cancelled:
-                    proc.kill(); return
-                self.status.emit(line.strip()[:80])
-            proc.wait()
-            if proc.returncode == 0:
-                self.progress.emit(100)
-                self.finished.emit("")
-            else:
-                self.error.emit(f"Homebrew вернул код {proc.returncode}\nПопробуй: brew install tesseract")
-        except Exception as e:
-            self.error.emit(str(e))
-
-    def _install_linux(self):
-        pkg_managers = [
-            (shutil.which("apt-get"), ["sudo", "apt-get", "install", "-y", "tesseract-ocr"]),
-            (shutil.which("dnf"),     ["sudo", "dnf", "install", "-y", "tesseract"]),
-            (shutil.which("pacman"),  ["sudo", "pacman", "-S", "--noconfirm", "tesseract"]),
-        ]
-        import subprocess as _sp
-        for mgr, cmd in pkg_managers:
-            if mgr:
-                self.status.emit(f"Устанавливаю через {Path(mgr).name}…")
-                try:
-                    proc = _sp.Popen(cmd, stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True)
-                    for line in proc.stdout:
-                        if self._cancelled:
-                            proc.kill(); return
-                        self.status.emit(line.strip()[:80])
-                    proc.wait()
-                    if proc.returncode == 0:
-                        self.progress.emit(100); self.finished.emit("")
-                    else:
-                        self.error.emit(f"Менеджер пакетов вернул код {proc.returncode}")
-                except Exception as e:
-                    self.error.emit(str(e))
-                return
-        self.error.emit("Не удалось определить менеджер пакетов.\nsudo apt install tesseract-ocr")
-
-    def _install_windows(self):
         import requests
         try:
             self.status.emit("Подключаюсь к серверу…")
             tmp_dir = tempfile.mkdtemp(prefix="lr_tess_")
             dest    = Path(tmp_dir) / "tesseract-installer.exe"
             tmp     = dest.with_suffix(".tmp")
+
             r = requests.get(TESSERACT_INSTALLER_URL, stream=True, timeout=30)
             r.raise_for_status()
-            total = int(r.headers.get("content-length", 0))
+            total      = int(r.headers.get("content-length", 0))
             downloaded = 0
+
             self.status.emit(f"Скачиваю Tesseract {TESSERACT_INSTALLER_VERSION}…")
             with open(tmp, "wb") as f:
                 for chunk in r.iter_content(chunk_size=65536):
                     if self._cancelled:
-                        tmp.unlink(missing_ok=True); return
+                        tmp.unlink(missing_ok=True)
+                        return
                     if chunk:
                         f.write(chunk)
                         downloaded += len(chunk)
                         if total:
                             self.progress.emit(int(downloaded / total * 100))
+
             tmp.rename(dest)
             self.status.emit("Загрузка завершена — запускаю установщик…")
             self.finished.emit(str(dest))
@@ -465,6 +389,7 @@ class TesseractTab(QWidget):
         self._build()
 
     def _build(self):
+        import webbrowser as _wb
         layout = QVBoxLayout(self)
         layout.setSpacing(20)
         layout.setContentsMargins(32, 32, 32, 32)
@@ -473,8 +398,10 @@ class TesseractTab(QWidget):
         cmd = find_tesseract_cmd()
         if cmd:
             bg, border, icon = "#0a2010", "#4caf5044", "✅"
-            msg = f"Tesseract найден:\n{cmd}"
             msg_color = "#4caf50"
+            # Кликабельный путь к файлу
+            short = cmd if len(cmd) < 60 else "…" + cmd[-57:]
+            msg = f"Tesseract найден: {short}"
         else:
             bg, border, icon = "#1e1400", "#ffb30044", "⚠️"
             msg = "Tesseract не найден на этом компьютере"
@@ -490,22 +417,90 @@ class TesseractTab(QWidget):
         ic = QLabel(icon)
         ic.setStyleSheet("font-size:32px;")
         card_row.addWidget(ic)
+
+        card_col = QVBoxLayout()
+        card_col.setSpacing(6)
         msg_lbl = QLabel(msg)
         msg_lbl.setStyleSheet(f"color:{msg_color}; font-size:14px;")
         msg_lbl.setWordWrap(True)
-        card_row.addWidget(msg_lbl, stretch=1)
+        card_col.addWidget(msg_lbl)
+
+        # Если найден — кнопка "Перейти к файлу"
+        if cmd:
+            from pathlib import Path as _P
+            tess_dir = str(_P(cmd).parent)
+            open_btn = QPushButton("📁  Перейти к файлу")
+            open_btn.setFixedHeight(28)
+            open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            open_btn.setStyleSheet(
+                "QPushButton{background:transparent;color:#4caf50;"
+                "border:1px solid #4caf5088;border-radius:6px;font-size:11px;padding:0 12px;}"
+                "QPushButton:hover{background:#4caf5020;}")
+            open_btn.clicked.connect(lambda: self._open_dir(tess_dir))
+            card_col.addWidget(open_btn)
+
+        card_row.addLayout(card_col, stretch=1)
         layout.addWidget(card)
 
-        # Описание
-        desc = QLabel(
-            "<b>Tesseract OCR</b> — бесплатный движок распознавания текста (Google).<br>"
-            "Без него функция «Фото → Текст» не работает.<br><br>"
-            f"Будет скачан установщик <b>v{TESSERACT_INSTALLER_VERSION}</b> (~48 МБ) "
-            "с официального репозитория <b>UB-Mannheim</b>."
-        )
+        # Описание + ссылки (зависят от платформы)
+        if sys.platform == "darwin":
+            desc_html = (
+                "<b>Tesseract OCR</b> — бесплатный движок распознавания текста (Google).<br>"
+                "Без него функция «Фото → Текст» не работает.<br><br>"
+                "Рекомендуется установить через <b>Homebrew</b>:<br>"
+                "<code style='background:#1a1a1a;padding:2px 6px;border-radius:3px;'>"
+                "brew install tesseract</code>"
+            )
+            btn_text = "🍺  Установить через Homebrew"
+            link_url = "https://brew.sh"
+            link_text = "🌐  Открыть brew.sh"
+            note_html = (
+                "💡 Homebrew установит tesseract и все зависимости автоматически.<br>"
+                "После установки перезапустите приложение."
+            )
+        elif sys.platform.startswith("linux"):
+            desc_html = (
+                "<b>Tesseract OCR</b> — бесплатный движок распознавания текста (Google).<br>"
+                "Без него функция «Фото → Текст» не работает.<br><br>"
+                "Установка через системный менеджер пакетов:<br>"
+                "<code style='background:#1a1a1a;padding:2px 6px;border-radius:3px;'>"
+                "sudo apt install tesseract-ocr</code>"
+            )
+            btn_text = "📦  Установить Tesseract"
+            link_url = "https://tesseract-ocr.github.io/tessdoc/Installation.html"
+            link_text = "🌐  Инструкция по установке"
+            note_html = "💡 Потребуется пароль sudo. После установки перезапустите приложение."
+        else:
+            desc_html = (
+                "<b>Tesseract OCR</b> — бесплатный движок распознавания текста (Google).<br>"
+                "Без него функция «Фото → Текст» не работает.<br><br>"
+                f"Скачайте установщик <b>v{TESSERACT_INSTALLER_VERSION}</b> (~48 МБ) "
+                "с официального репозитория UB-Mannheim."
+            )
+            btn_text = "⬇  Скачать и установить Tesseract"
+            link_url = "https://github.com/UB-Mannheim/tesseract/wiki"
+            link_text = "🌐  UB-Mannheim (официальный источник)"
+            note_html = (
+                "💡 При установке рекомендуется отметить <b>«Additional language data»</b> — "
+                "тогда языки скачивать отдельно не нужно."
+            )
+
+        desc = QLabel(desc_html)
         desc.setStyleSheet("color:#aaa; font-size:13px;")
         desc.setWordWrap(True)
+        desc.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(desc)
+
+        # Ссылка в браузер
+        link_btn = QPushButton(link_text)
+        link_btn.setFixedHeight(34)
+        link_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        link_btn.setStyleSheet(
+            "QPushButton{background:transparent;color:#58a6ff;"
+            "border:1px solid #58a6ff55;border-radius:8px;font-size:12px;padding:0 16px;}"
+            "QPushButton:hover{background:#58a6ff15;border-color:#58a6ff;}")
+        link_btn.clicked.connect(lambda: _wb.open(link_url))
+        layout.addWidget(link_btn)
 
         # Прогресс
         self.pbar = QProgressBar()
@@ -527,13 +522,16 @@ class TesseractTab(QWidget):
         self.status_lbl.setWordWrap(True)
         layout.addWidget(self.status_lbl)
 
-        # Кнопки
+        # Кнопки установки (скрываем если уже установлен)
         btn_row = QHBoxLayout()
         btn_row.setSpacing(12)
-        self.dl_btn = QPushButton("⬇  Скачать и установить Tesseract")
+        self.dl_btn = QPushButton(btn_text)
         self.dl_btn.setFixedHeight(46)
         self.dl_btn.setStyleSheet(_btn_style("#2a5298"))
         self.dl_btn.clicked.connect(self._start_download)
+        if cmd:
+            self.dl_btn.setText("🔄  Переустановить Tesseract")
+            self.dl_btn.setStyleSheet(_btn_style("#333", "#888"))
         btn_row.addWidget(self.dl_btn)
 
         self.cancel_btn = QPushButton("Отмена")
@@ -545,17 +543,28 @@ class TesseractTab(QWidget):
         btn_row.addStretch()
         layout.addLayout(btn_row)
 
-        note = QLabel(
-            "💡 При установке рекомендуется отметить <b>«Additional language data»</b> — "
-            "тогда языки скачивать отдельно не нужно."
-        )
+        note = QLabel(note_html)
         note.setStyleSheet(
             "color:#888; font-size:12px; background:#1c1c1c;"
             " border-radius:8px; padding:10px 14px;"
         )
         note.setWordWrap(True)
+        note.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(note)
         layout.addStretch()
+
+    def _open_dir(self, path: str):
+        """Открывает папку в файловом менеджере."""
+        import subprocess as _sp
+        try:
+            if sys.platform == "darwin":
+                _sp.Popen(["open", path])
+            elif sys.platform.startswith("linux"):
+                _sp.Popen(["xdg-open", path])
+            else:
+                import os; os.startfile(path)
+        except Exception:
+            pass
 
     def _start_download(self):
         self.dl_btn.setEnabled(False)
@@ -572,20 +581,14 @@ class TesseractTab(QWidget):
     def _on_downloaded(self, exe_path: str):
         self.pbar.setValue(100)
         self.cancel_btn.setVisible(False)
-        global _tesseract_cmd_cache
-        _tesseract_cmd_cache = False
-        if not exe_path:
-            # Mac/Linux — установка завершена внутри потока
-            self.status_lbl.setText("✅ Tesseract установлен! Перезапустите приложение.")
-            self.installed.emit()
-            self.dl_btn.setEnabled(True)
-            return
-        # Windows — запускаем скачанный .exe
         try:
             subprocess.Popen([exe_path], shell=True)
             self.status_lbl.setText(
                 "✅ Установщик запущен. После установки перезапусти приложение."
             )
+            # Сбрасываем кеш — после установки tesseract будет доступен
+            global _tesseract_cmd_cache
+            _tesseract_cmd_cache = False
             self.installed.emit()
         except Exception as e:
             self.status_lbl.setText(f"❌ Не удалось запустить: {e}")
