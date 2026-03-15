@@ -1,4 +1,4 @@
-name: Build & Release
+name: Build & Release (Multi-Platform)
 
 on:
   push:
@@ -7,78 +7,283 @@ on:
   workflow_dispatch:
 
 jobs:
+  # ═══════════════════════════════════════════════════════════════════════
+  #  Матрица сборки: Windows · macOS · Linux
+  # ═══════════════════════════════════════════════════════════════════════
   build:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false       # Не останавливаем остальные если одна платформа упала
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+            arch: x64
+            artifact_ext: exe
+
+          - os: macos-14       # Apple Silicon (M1/M2)
+            platform: macos
+            arch: arm64
+            artifact_ext: dmg
+
+          - os: macos-13       # Intel Mac
+            platform: macos
+            arch: x64
+            artifact_ext: dmg
+
+          - os: ubuntu-22.04
+            platform: linux
+            arch: x64
+            artifact_ext: AppImage
+
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: write
 
     steps:
+      # ── Checkout ───────────────────────────────────────────────────────
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
+      # ── Python ─────────────────────────────────────────────────────────
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
           cache: "pip"
 
-      - name: Install dependencies
+      # ── Системные зависимости Linux ───────────────────────────────────
+      - name: Install Linux system deps
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libportaudio2 portaudio19-dev \
+            libasound2-dev \
+            libgl1-mesa-glx libglib2.0-0 \
+            libxcb-xinerama0 libxcb-cursor0 \
+            tesseract-ocr \
+            fuse libfuse2
+
+      # ── Системные зависимости macOS ───────────────────────────────────
+      - name: Install macOS system deps
+        if: matrix.platform == 'macos'
+        run: |
+          brew install portaudio tesseract || true
+
+      # ── Python зависимости ────────────────────────────────────────────
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller packaging
 
+      - name: Install Windows-only packages
+        if: matrix.platform == 'windows'
+        run: pip install PyAudioWPatch
+
+      # ── Версия ────────────────────────────────────────────────────────
+      - name: Read version
+        id: version
+        shell: bash
+        run: |
+          VER=$(python -c "from version import __version__; print(__version__)")
+          echo "VERSION=$VER" >> "$GITHUB_OUTPUT"
+          echo "Version: $VER"
+
+      # ── Changelog ─────────────────────────────────────────────────────
+      - name: Read changelog
+        id: changelog
+        shell: bash
+        run: |
+          if [ -f "RELEASE_NOTES.md" ]; then
+            NOTES=$(cat RELEASE_NOTES.md)
+          else
+            NOTES="_Описание изменений не предоставлено._"
+          fi
+          DELIMITER="NOTES_EOF_$(date +%s)"
+          {
+            echo "BODY<<$DELIMITER"
+            echo "$NOTES"
+            echo "$DELIMITER"
+          } >> "$GITHUB_OUTPUT"
+
+      # ── PyInstaller ───────────────────────────────────────────────────
+      - name: Build with PyInstaller (Windows)
+        if: matrix.platform == 'windows'
+        run: pyinstaller LessonRecorder.spec --clean --noconfirm
+
+      - name: Build with PyInstaller (macOS/Linux)
+        if: matrix.platform != 'windows'
+        run: pyinstaller LessonRecorder.spec --clean --noconfirm
+
+      # ═══ Windows: Inno Setup installer ════════════════════════════════
+      - name: Install Inno Setup
+        if: matrix.platform == 'windows'
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build Windows installer
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "dist\installer" | Out-Null
+          iscc installer\setup.iss
+          $src = Get-ChildItem "dist\installer\*.exe" | Select-Object -First 1
+          if ($src) {
+            $name = "LessonRecorder_v${{ steps.version.outputs.VERSION }}_Windows_x64_setup.exe"
+            $dst  = Join-Path $src.DirectoryName $name
+            if ($src.FullName -ne $dst) { Rename-Item $src.FullName $name -Force }
+          }
+
+      # ═══ macOS: .dmg ══════════════════════════════════════════════════
+      - name: Build macOS DMG
+        if: matrix.platform == 'macos'
+        run: |
+          APP="dist/LessonRecorder.app"
+          ARCH="${{ matrix.arch }}"
+          VER="${{ steps.version.outputs.VERSION }}"
+          DMG="dist/LessonRecorder_v${VER}_macOS_${ARCH}.dmg"
+          TMP="dist/tmp_rw.dmg"
+
+          hdiutil create -size 500m -fs HFS+ -volname "LessonRecorder" \
+                         -srcfolder "$APP" "$TMP"
+          hdiutil convert "$TMP" -format UDZO -imagekey zlib-level=9 -o "$DMG"
+          rm -f "$TMP"
+          echo "DMG_PATH=$DMG" >> "$GITHUB_ENV"
+
+      # ═══ Linux: AppImage + tar.gz ═════════════════════════════════════
+      - name: Build Linux AppImage
+        if: matrix.platform == 'linux'
+        run: |
+          VER="${{ steps.version.outputs.VERSION }}"
+
+          # Скачиваем appimagetool
+          curl -L "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage" \
+               -o dist/appimagetool
+          chmod +x dist/appimagetool
+
+          # AppDir
+          APPDIR="dist/AppDir"
+          mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/applications" \
+                   "$APPDIR/usr/share/icons/hicolor/256x256/apps"
+
+          cp -r dist/LessonRecorder/* "$APPDIR/usr/bin/"
+
+          cat > "$APPDIR/LessonRecorder.desktop" <<'EOF'
+          [Desktop Entry]
+          Name=LessonRecorder
+          Exec=LessonRecorder
+          Icon=LessonRecorder
+          Type=Application
+          Categories=Education;AudioVideo;
+          EOF
+
+          cp "$APPDIR/LessonRecorder.desktop" \
+             "$APPDIR/usr/share/applications/LessonRecorder.desktop"
+
+          [[ -f app_icon.png ]] && {
+            cp app_icon.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/LessonRecorder.png"
+            cp app_icon.png "$APPDIR/LessonRecorder.png"
+          }
+
+          cat > "$APPDIR/AppRun" <<'EOF'
+          #!/bin/bash
+          HERE="$(dirname "$(readlink -f "$0")")"
+          exec "$HERE/usr/bin/LessonRecorder" "$@"
+          EOF
+          chmod +x "$APPDIR/AppRun"
+
+          APPIMAGE="dist/LessonRecorder_v${VER}_Linux_x64.AppImage"
+          ARCH=x86_64 dist/appimagetool "$APPDIR" "$APPIMAGE"
+          chmod +x "$APPIMAGE"
+
+          # tar.gz как запасной вариант
+          tar -czf "dist/LessonRecorder_v${VER}_Linux_x64.tar.gz" \
+              -C dist LessonRecorder
+
+          echo "APPIMAGE_PATH=$APPIMAGE" >> "$GITHUB_ENV"
+          echo "TAR_PATH=dist/LessonRecorder_v${VER}_Linux_x64.tar.gz" >> "$GITHUB_ENV"
+
+      # ── Находим итоговый артефакт ──────────────────────────────────────
+      - name: Find artifact (Windows)
+        if: matrix.platform == 'windows'
+        id: artifact_win
+        shell: pwsh
+        run: |
+          $f = Get-ChildItem "dist\installer\*.exe" | Select-Object -First 1
+          echo "PATH=$($f.FullName)" >> $env:GITHUB_OUTPUT
+          echo "NAME=$($f.Name)"     >> $env:GITHUB_OUTPUT
+
+      - name: Find artifact (macOS)
+        if: matrix.platform == 'macos'
+        id: artifact_mac
+        shell: bash
+        run: |
+          f=$(ls dist/*.dmg | head -1)
+          echo "PATH=$f"           >> "$GITHUB_OUTPUT"
+          echo "NAME=$(basename $f)" >> "$GITHUB_OUTPUT"
+
+      - name: Find artifact (Linux)
+        if: matrix.platform == 'linux'
+        id: artifact_linux
+        shell: bash
+        run: |
+          fi=$(ls dist/*.AppImage | head -1)
+          ft=$(ls dist/*.tar.gz | head -1)
+          echo "APPIMAGE_PATH=$fi"           >> "$GITHUB_OUTPUT"
+          echo "APPIMAGE_NAME=$(basename $fi)" >> "$GITHUB_OUTPUT"
+          echo "TAR_PATH=$ft"               >> "$GITHUB_OUTPUT"
+          echo "TAR_NAME=$(basename $ft)"   >> "$GITHUB_OUTPUT"
+
+      # ── Upload artifact для последующего релиза ───────────────────────
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            dist/installer/*.exe
+            dist/*.dmg
+            dist/*.AppImage
+            dist/*.tar.gz
+          retention-days: 1
+
+  # ═══════════════════════════════════════════════════════════════════════
+  #  Создание GitHub Release (после всех сборок)
+  # ═══════════════════════════════════════════════════════════════════════
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Read version
         id: version
         run: |
-          $ver = python -c "from version import __version__; print(__version__)"
-          echo "VERSION=$ver" >> $env:GITHUB_OUTPUT
-          echo "Version: $ver"
+          VER=$(python3 -c "from version import __version__; print(__version__)")
+          echo "VERSION=$VER" >> "$GITHUB_OUTPUT"
 
       - name: Read changelog
         id: changelog
         run: |
-          if (Test-Path "RELEASE_NOTES.md") {
-            $notes = Get-Content "RELEASE_NOTES.md" -Raw -Encoding utf8
-          } else {
-            $notes = "_Описание изменений не предоставлено._"
-          }
-          $delimiter = "NOTES_EOF_$([System.Guid]::NewGuid().ToString('N'))"
-          echo "BODY<<$delimiter"  >> $env:GITHUB_OUTPUT
-          echo $notes              >> $env:GITHUB_OUTPUT
-          echo $delimiter          >> $env:GITHUB_OUTPUT
+          if [ -f "RELEASE_NOTES.md" ]; then NOTES=$(cat RELEASE_NOTES.md)
+          else NOTES="_Описание изменений не предоставлено._"; fi
+          DELIM="NOTES_EOF_$(date +%s)"
+          { echo "BODY<<$DELIM"; echo "$NOTES"; echo "$DELIM"; } >> "$GITHUB_OUTPUT"
 
-      - name: Build with PyInstaller
-        run: pyinstaller LessonRecorder.spec --clean --noconfirm
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          merge-multiple: true
 
-      - name: Install Inno Setup
-        run: choco install innosetup --yes --no-progress
+      - name: List artifacts
+        run: find artifacts/ -type f | sort
 
-      - name: Build installer
-        run: |
-          # Папка выходных файлов
-          New-Item -ItemType Directory -Force -Path "dist\installer" | Out-Null
-          # Сборка установщика
-          iscc installer\setup.iss
-          # Переименовываем с версией
-          $src = Get-ChildItem "dist\installer\*.exe" | Select-Object -First 1
-          if ($src) {
-            $dstName = "LessonRecorder_v${{ steps.version.outputs.VERSION }}_setup.exe"
-            $dstPath = Join-Path $src.DirectoryName $dstName
-            if ($src.FullName -ne $dstPath) {
-              Rename-Item -Path $src.FullName -NewName $dstName -Force
-            }
-          }
-
-      - name: Find installer
-        id: installer
-        run: |
-          $file = Get-ChildItem -Path "dist\installer\*.exe" | Select-Object -First 1
-          echo "PATH=$($file.FullName)" >> $env:GITHUB_OUTPUT
-          echo "NAME=$($file.Name)"     >> $env:GITHUB_OUTPUT
-          echo "Found: $($file.FullName)"
-
-      - name: Create Release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
@@ -88,20 +293,39 @@ jobs:
 
             ---
 
-            ### Установка
-            1. Скачайте `${{ steps.installer.outputs.NAME }}`
-            2. Запустите установщик
-            3. Python и компоненты транскрипции установятся автоматически
-            4. Готово — при следующем запуске приложение само предложит обновиться
+            ## 📦 Скачать
 
-            > **Python не требуется устанавливать отдельно** — установщик сделает это автоматически
+            | Платформа | Файл |
+            |-----------|------|
+            | 🪟 Windows 10/11 (64-bit) | `LessonRecorder_v..._Windows_x64_setup.exe` |
+            | 🍎 macOS (Apple Silicon M1/M2/M3) | `LessonRecorder_v..._macOS_arm64.dmg` |
+            | 🍎 macOS (Intel) | `LessonRecorder_v..._macOS_x64.dmg` |
+            | 🐧 Linux (x64) AppImage | `LessonRecorder_v..._Linux_x64.AppImage` |
+            | 🐧 Linux (x64) tar.gz | `LessonRecorder_v..._Linux_x64.tar.gz` |
 
-            ### Системные требования
-            - Windows 10/11 (64-bit)
-            - 4 GB RAM (8 GB рекомендуется)
-            - Интернет при первой установке (для Python и компонентов)
-            - Интернет для AI конспектов (Groq / Gemini / OpenRouter — бесплатно)
-          files: ${{ steps.installer.outputs.PATH }}
+            ## 🚀 Установка
+
+            **Windows:** Запустите `.exe` установщик — Python установится автоматически.
+
+            **macOS:** Откройте `.dmg`, перетащите в `/Applications`. При первом запуске:
+            ```
+            Правой кнопкой → Открыть → Открыть (обойти Gatekeeper)
+            ```
+            Если Python не установлен: `brew install python3`
+
+            **Linux (AppImage):**
+            ```bash
+            chmod +x LessonRecorder_*.AppImage
+            ./LessonRecorder_*.AppImage
+            ```
+            Если Python не установлен: `sudo apt install python3.12` (Ubuntu/Debian)
+
+            ## Системные требования
+
+            - Python 3.10+ (Windows — устанавливается автоматически)
+            - 4 GB RAM (8 GB рекомендуется для Whisper)
+            - Интернет при первой установке
+          files: artifacts/**/*
           draft: false
           prerelease: false
         env:

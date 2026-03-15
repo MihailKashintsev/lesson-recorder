@@ -1,30 +1,37 @@
-# Основные зависимости LessonRecorder
-# Установка: pip install -r requirements.txt
+# ============================================================
+#  LessonRecorder — зависимости
+#  Установка: pip install -r requirements.txt
+#
+#  Платформенные пакеты ставятся автоматически через bootstrap.py
+# ============================================================
 
-# GUI
+# --- GUI ---
 PyQt6>=6.5.0
 
-# Транскрипция
+# --- Транскрипция ---
 openai-whisper>=20231117
 faster-whisper>=1.0.0
 
-# Аудио
+# --- Аудио (кросс-платформа) ---
 sounddevice>=0.4.6
-PyAudioWPatch>=0.2.12
 numpy>=1.24.0
 scipy>=1.11.0
 
-# AI-конспекты
+# --- Аудио только Windows (WASAPI loopback — запись системного звука) ---
+# Устанавливается автоматически в bootstrap.py на Windows
+# PyAudioWPatch>=0.2.12
+
+# --- AI-конспекты ---
 openai>=1.0.0
 
-# HTTP
+# --- HTTP ---
 requests>=2.31.0
 packaging>=23.0
 
-# OCR (опционально)
+# --- OCR (опционально) ---
 pytesseract>=0.3.10
 Pillow>=10.0.0
 opencv-python>=4.8.0
 
-# Google Gemini (опционально)
+# --- Google Gemini (опционально) ---
 google-generativeai>=0.3.0

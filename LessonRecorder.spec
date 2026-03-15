@@ -1,99 +1,149 @@
-# -*- mode: python ; coding: utf-8 -*-
-"""
-LessonRecorder.spec
+# LessonRecorder.spec — кросс-платформенная сборка
+# Работает на Windows, macOS и Linux.
+# Использование: pyinstaller LessonRecorder.spec --clean --noconfirm
 
-ВАЖНО: transcribe_worker.py включается как DATA-файл (.py), а не как модуль.
-Это нужно чтобы запускать его через пользовательский python.exe в рантайме,
-а не через bundled Python который не видит AppData-пакеты.
-"""
-
+import sys
+import os
 from pathlib import Path
 
-block_cipher = None
+# ── Константы ─────────────────────────────────────────────────────────────
+APP_NAME   = "LessonRecorder"
+ENTRY      = "main.py"
+BASE_DIR   = Path(SPEC).parent       # Корень проекта (рядом со .spec)
 
-# Дополнительные данные: воркер .py и папки ресурсов
-added_files = [
-    # Воркер транскрипции — .py файл, запускается отдельным python.exe
-    ("core/transcribe_worker.py", "core"),
+IS_WIN     = sys.platform == "win32"
+IS_MAC     = sys.platform == "darwin"
+IS_LINUX   = sys.platform.startswith("linux")
+
+# ── Иконка (платформо-зависимая) ──────────────────────────────────────────
+def _icon():
+    if IS_WIN:
+        p = BASE_DIR / "app_icon.ico"
+    elif IS_MAC:
+        p = BASE_DIR / "app_icon.icns"
+        if not p.exists():
+            p = BASE_DIR / "app_icon.png"
+    else:
+        p = BASE_DIR / "app_icon.png"
+    return str(p) if p.exists() else None
+
+ICON = _icon()
+
+# ── Дополнительные данные (скопировать рядом с бинарником) ────────────────
+datas = []
+
+# Иконки
+for name in ["app_icon.ico", "app_icon.icns", "app_icon.png"]:
+    p = BASE_DIR / name
+    if p.exists():
+        datas.append((str(p), "."))
+
+# Прочие ресурсы (если есть)
+for resource_dir in ["assets", "resources", "locale"]:
+    p = BASE_DIR / resource_dir
+    if p.exists():
+        datas.append((str(p), resource_dir))
+
+# ── Скрытые импорты (нужны для faster-whisper / ctranslate2) ──────────────
+hiddenimports = [
+    "faster_whisper",
+    "ctranslate2",
+    "whisper",
+    "sounddevice",
+    "soundfile",
+    "scipy.signal",
+    "scipy.io.wavfile",
+    "numpy",
+    "openai",
+    "requests",
+    "packaging",
+    "google.generativeai",
+    # PyQt6 плагины
+    "PyQt6.QtWidgets",
+    "PyQt6.QtCore",
+    "PyQt6.QtGui",
+    "PyQt6.QtMultimedia",
+    "PyQt6.sip",
 ]
 
-# Иконка — добавляем в bundle чтобы main.py нашёл её через sys._MEIPASS
-if Path("app_icon.ico").exists():
-    added_files.append(("app_icon.ico", "."))
+if IS_WIN:
+    hiddenimports += ["pyaudiowpatch", "win32api", "win32con"]
+if IS_MAC:
+    hiddenimports += ["AppKit", "Foundation"]
 
-# Добавляем ресурсы если есть
-for extra in ["resources", "assets", "tessdata"]:
-    if Path(extra).exists():
-        added_files.append((extra, extra))
+# ── Исключения (уменьшаем размер бандла) ──────────────────────────────────
+excludes = [
+    "matplotlib", "tkinter", "unittest", "test",
+    "IPython", "jupyter", "notebook",
+    "pandas", "sklearn", "torch",    # Torch тяжёлый — whisper без него тоже работает
+    "torchvision", "torchaudio",
+]
 
-# Иконка для EXE файла
-icon_path = "app_icon.ico" if Path("app_icon.ico").exists() else None
+# ─────────────────────────────────────────────────────────────────────────
 
 a = Analysis(
-    ["main.py"],
-    pathex=["."],
+    [str(BASE_DIR / ENTRY)],
+    pathex=[str(BASE_DIR)],
     binaries=[],
-    datas=added_files,
-    hiddenimports=[
-        "core.transcribe_worker",
-        "core.python_path",
-        "PyQt6.QtCore",
-        "PyQt6.QtWidgets",
-        "PyQt6.QtGui",
-        "sounddevice",
-        "numpy",
-        "scipy",
-        "scipy.signal",
-        "requests",
-        "packaging",
-        "packaging.version",
-    ],
+    datas=datas,
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[
-        # НЕ включаем whisper и faster_whisper в бандл —
-        # они устанавливаются пользователем в свой Python
-        "faster_whisper",
-        "whisper",
-        "torch",
-        "ctranslate2",
-    ],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
-    cipher=block_cipher,
+    excludes=excludes,
     noarchive=False,
+    optimize=0,
 )
 
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+pyz = PYZ(a.pure)
 
 exe = EXE(
     pyz,
     a.scripts,
     [],
     exclude_binaries=True,
-    name="LessonRecorder",
+    name=APP_NAME,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=False,           # GUI приложение — без консоли
+    upx_exclude=[],
+    console=False,      # Без терминального окна
     disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
+    argv_emulation=IS_MAC,   # macOS: передача файлов через Finder
+    target_arch=None,        # None = текущая арх. (arm64 или x86_64)
     codesign_identity=None,
     entitlements_file=None,
-    icon=icon_path,
-    version="version_info.txt" if Path("version_info.txt").exists() else None,
+    icon=ICON,
+    version="version_info.txt" if IS_WIN else None,
 )
 
 coll = COLLECT(
     exe,
     a.binaries,
-    a.zipfiles,
     a.datas,
     strip=False,
     upx=True,
     upx_exclude=[],
-    name="LessonRecorder",
+    name=APP_NAME,
 )
+
+# ── macOS: .app bundle ────────────────────────────────────────────────────
+if IS_MAC:
+    app = BUNDLE(
+        coll,
+        name=f"{APP_NAME}.app",
+        icon=ICON,
+        bundle_identifier="com.render.lessonrecorder",
+        info_plist={
+            "CFBundleName": APP_NAME,
+            "CFBundleDisplayName": APP_NAME,
+            "CFBundleVersion": "1.0.0",
+            "CFBundleShortVersionString": "1.0.0",
+            "NSMicrophoneUsageDescription":
+                "LessonRecorder использует микрофон для записи уроков.",
+            "NSHighResolutionCapable": True,
+            "LSMinimumSystemVersion": "10.15",
+            "NSRequiresAquaSystemAppearance": False,  # поддержка Dark Mode
+        },
+    )
