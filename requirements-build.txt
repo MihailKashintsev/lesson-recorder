@@ -1,0 +1,36 @@
+# ============================================================
+#  requirements-build.txt — ТОЛЬКО для CI/CD сборки (PyInstaller)
+#
+#  Сюда НЕ входят:
+#    - openai-whisper  (тянет torch + numba + llvmlite — 2+ ГБ, не нужны в бандле)
+#    - PyAudioWPatch   (только Windows, ставится отдельным шагом)
+#
+#  Эти пакеты устанавливаются пользователем при первом запуске
+#  приложения через встроенный диалог автоустановки.
+# ============================================================
+
+# GUI
+PyQt6>=6.5.0
+
+# Транскрипция — только faster-whisper (без torch/numba/llvmlite)
+faster-whisper>=1.0.0
+
+# Аудио
+sounddevice>=0.4.6
+numpy>=1.24.0
+scipy>=1.11.0
+
+# AI-конспекты
+openai>=1.0.0
+
+# HTTP + версии
+requests>=2.31.0
+packaging>=23.0
+
+# OCR (опционально, маленькие пакеты)
+pytesseract>=0.3.10
+Pillow>=10.0.0
+opencv-python>=4.8.0
+
+# Google Gemini (опционально)
+google-generativeai>=0.3.0
