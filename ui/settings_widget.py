@@ -98,7 +98,7 @@ PACKAGES_INFO = [
         "desc":        "Запись системного звука (WASAPI loopback, только Windows)",
         "used_for":    "🖥 Системный звук",
         "required":    False,
-        "platforms":   ["win32"],           # ← ТОЛЬКО Windows, скрывать на Mac/Linux
+        "platforms":   ["win32"],
         "github_url":  "https://github.com/s0d3s/PyAudioWPatch",
     },
     {
@@ -1156,6 +1156,7 @@ class SettingsWidget(QWidget):
             if not pkg.get("platforms") or sys.platform in pkg["platforms"]
         ]
 
+        # Сначала рисуем все строки с "🔍 проверяю…"
         for pkg in visible_packages:
             row_w = self._build_pkg_row(pkg, c, checking=True)
             self._pkg_vbox.addWidget(row_w)
@@ -1164,8 +1165,8 @@ class SettingsWidget(QWidget):
         self._start_pkg_check()
 
     def _start_pkg_check(self):
+        """Запускает PkgCheckThread для видимых пакетов параллельно."""
         _pip_show_cache.clear()
-        # Проверяем только те пакеты, строки которых реально созданы
         pip_names = list(self._pkg_rows.keys())
         if not pip_names:
             return
@@ -1380,7 +1381,6 @@ class SettingsWidget(QWidget):
 
     def _install_missing(self):
         for pkg in PACKAGES_INFO:
-            # Пропускаем пакеты не для этой платформы
             if pkg.get("platforms") and sys.platform not in pkg["platforms"]:
                 continue
             if not _is_package_installed(pkg["pip_name"], pkg["import_name"]):
@@ -1427,18 +1427,14 @@ class SettingsWidget(QWidget):
         self._uninstall_by_name(pkg["pip_name"])
 
     def _on_pip_done(self, pip_name: str, success: bool, output: str):
-        # ❌ НЕЛЬЗЯ: self._pip_threads.pop(pip_name, None)
-        # Qt требует что QThread дожил до wait() перед удалением.
-        # Вместо pop() — помечаем для отложенной очистки через finished-сигнал.
+        # Не удаляем поток сразу — ждём QThread.finished чтобы избежать SIGABRT
         t = self._pip_threads.get(pip_name)
         if t:
-            # Подключаем однократный слот очистки к built-in QThread.finished
             try:
                 t.finished.disconnect()
             except Exception:
                 pass
             t.finished.connect(lambda pn=pip_name: self._pip_threads.pop(pn, None))
-
         row = self._pkg_rows.get(pip_name)
         if not row:
             return
@@ -1476,5 +1472,123 @@ class SettingsWidget(QWidget):
         row = self._pkg_rows.get(pip_name)
         if row:
             row["action_lbl"].setText("✅ Готово")
-        # pop теперь делается в t2.finished.connect выше — здесь не нужен
-"""
+
+    def _show_pip_log(self, pip_name: str, success: bool, output: str):
+        """Показывает диалог с полным выводом pip."""
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QTextEdit, QPushButton, QLabel
+        c = get_colors(self._theme)
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"pip {'install' if not success else 'output'} — {pip_name}")
+        dlg.setMinimumSize(560, 400)
+        dlg.setStyleSheet(f"QDialog{{background:{c['bg_panel']};color:{c['text']};}}")
+
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(16, 16, 16, 16)
+        lay.setSpacing(10)
+
+        status_text = "❌ Ошибка установки" if not success else "✅ Успешно"
+        lbl = QLabel(f"{status_text} — {pip_name}")
+        lbl.setStyleSheet(
+            f"color:{'#f44336' if not success else '#4caf50'};"
+            "font-size:13px;font-weight:600;")
+        lay.addWidget(lbl)
+
+        hint = QLabel("Скопируй и запусти команду вручную в терминале:")
+        hint.setStyleSheet(f"color:{c['text_muted']};font-size:11px;")
+        lay.addWidget(hint)
+
+        cmd_lbl = QLabel(f"pip install {pip_name}")
+        cmd_lbl.setStyleSheet(
+            f"color:{c['accent_blue']};font-size:12px;font-weight:600;"
+            f"background:{c['bg_input']};border-radius:5px;padding:6px 10px;")
+        cmd_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        lay.addWidget(cmd_lbl)
+
+        log = QTextEdit()
+        log.setReadOnly(True)
+        log.setPlainText(output or "(нет вывода)")
+        log.setStyleSheet(
+            f"QTextEdit{{background:#0d1117;color:#e6edf3;"
+            f"border:1px solid {c['border']};border-radius:6px;"
+            f"font-family:Consolas,monospace;font-size:11px;padding:8px;}}")
+        lay.addWidget(log, stretch=1)
+
+        from PyQt6.QtWidgets import QHBoxLayout
+        btn_row = QHBoxLayout()
+        btn_copy = QPushButton("📋  Скопировать лог")
+        btn_copy.setStyleSheet(
+            f"QPushButton{{background:{c['bg_input']};color:{c['text']};"
+            f"border:1px solid {c['border']};border-radius:6px;padding:6px 14px;}}"
+            f"QPushButton:hover{{background:{c['bg_hover']};}}")
+        btn_copy.clicked.connect(
+            lambda: __import__("PyQt6.QtWidgets", fromlist=["QApplication"])
+            .QApplication.clipboard().setText(output))
+        btn_row.addWidget(btn_copy)
+        btn_row.addStretch()
+        btn_close = QPushButton("Закрыть")
+        btn_close.setStyleSheet(
+            f"QPushButton{{background:{c['accent_blue']};color:#fff;"
+            f"border:none;border-radius:6px;padding:6px 18px;}}"
+            f"QPushButton:hover{{background:{c['accent_blue']}cc;}}")
+        btn_close.clicked.connect(dlg.accept)
+        btn_row.addWidget(btn_close)
+        lay.addLayout(btn_row)
+
+        dlg.exec()
+
+    # ── Сохранение ────────────────────────────────────────────────────────
+
+    def _save(self):
+        provider_id = self.combo_provider.currentData()
+        src_keys = ["mic", "system", "both"]
+
+        mic_device_index = self.combo_mic_device.currentData()
+
+        self.settings.update({
+            "audio_source": src_keys[self.combo_source.currentIndex()],
+            "mic_device_index": mic_device_index,
+            "whisper_model": self.combo_whisper_model.currentText(),
+            "language": self.combo_lang.currentData(),
+            "ai_provider": provider_id,
+            "ai_api_key": self.edit_api_key.text().strip(),
+            "ai_model": self._get_current_model(),
+            "ai_custom_url": self.edit_custom_url.text().strip(),
+            "ai_custom_model": self.edit_custom_model.text().strip(),
+            "theme": self._theme,
+        })
+        save_settings(self.settings)
+
+        # ✅ НЕТ перезапуска приложения — только инфо
+        c = get_colors(self._theme)
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Настройки сохранены")
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.setText("✅ Настройки успешно сохранены!")
+        msg.setStyleSheet(f"QMessageBox {{ background: {c['bg_card'] if 'bg_card' in c else c['bg_panel']}; color: {c['text']}; }}")
+        msg.exec()
+
+    def get_settings(self) -> dict:
+        return load_settings()
+
+    # ── Стили ─────────────────────────────────────────────────────────────
+
+    def _secondary_btn_style(self, c: dict) -> str:
+        return f"""
+            QPushButton {{
+                background: {c['bg_input']}; color: {c['text']};
+                border: 1px solid {c['border']}; border-radius: 6px;
+                padding: 6px 16px; font-size: 12px;
+            }}
+            QPushButton:hover {{ background: {c['bg_hover']}; color: {c['text']}; }}
+        """
+
+    def _link_btn_style(self, c: dict) -> str:
+        return f"""
+            QPushButton {{
+                background: transparent; color: {c['accent_blue']};
+                border: 1px solid {c['accent_blue']}; border-radius: 6px;
+                padding: 6px 14px; font-size: 12px;
+            }}
+            QPushButton:hover {{ background: {c['bg_selected']}; }}
+        """
