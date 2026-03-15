@@ -1,21 +1,96 @@
-"""
-ПАТЧ для ui/settings_widget.py
-Исправляет три проблемы:
-  1. PyAudioWPatch показывается на Mac — добавляем поле "platforms": ["win32"]
-  2. QThread краш — не удаляем ссылку пока поток жив
-  3. _install_missing пытается ставить Windows-пакеты на Mac
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
+    QLineEdit, QPushButton, QGroupBox, QFormLayout,
+    QMessageBox, QScrollArea, QFrame, QButtonGroup, QRadioButton,
+    QCheckBox, QStackedWidget,
+)
+from PyQt6.QtCore import Qt, pyqtSignal, QThread
+import json, sys, subprocess
+from pathlib import Path
 
-КАК ПРИМЕНИТЬ:
-  Замени в settings_widget.py указанные блоки кода на исправленные версии.
-  Ищи строки по первому слову/символу блока — они уникальны.
-"""
-
-# ══════════════════════════════════════════════════════════════════════════════
-# ИСПРАВЛЕНИЕ 1:  PyAudioWPatch — добавить поле "platforms"
-# Найди в PACKAGES_INFO блок с "PyAudioWPatch" и замени на:
-# ══════════════════════════════════════════════════════════════════════════════
-
-PYAUDIO_PATCH = """
+# ── Python-пакеты — описания и метаданные ────────────────────────────────────
+PACKAGES_INFO = [
+    {
+        "import_name": "faster_whisper",
+        "pip_name":    "faster-whisper",
+        "label":       "faster-whisper",
+        "desc":        "Офлайн-транскрипция аудио (быстрый Whisper на C++, требует AVX2)",
+        "used_for":    "🎙 Транскрипция",
+        "required":    True,
+        "github_url":  "https://github.com/SYSTRAN/faster-whisper",
+    },
+    {
+        "import_name": "whisper",
+        "pip_name":    "openai-whisper",
+        "label":       "openai-whisper",
+        "desc":        "Офлайн-транскрипция аудио (PyTorch, работает на любом CPU)",
+        "used_for":    "🎙 Транскрипция (fallback)",
+        "required":    True,
+        "github_url":  "https://github.com/openai/whisper",
+    },
+    {
+        "import_name": "numpy",
+        "pip_name":    "numpy",
+        "label":       "numpy",
+        "desc":        "Обработка аудиоданных и матричные операции",
+        "used_for":    "🎙 Запись и транскрипция",
+        "required":    True,
+        "github_url":  "https://github.com/numpy/numpy",
+    },
+    {
+        "import_name": "scipy",
+        "pip_name":    "scipy",
+        "label":       "scipy",
+        "desc":        "Ресемплинг аудио (конвертация частоты дискретизации)",
+        "used_for":    "🎙 Обработка аудио",
+        "required":    True,
+        "github_url":  "https://github.com/scipy/scipy",
+    },
+    {
+        "import_name": "sounddevice",
+        "pip_name":    "sounddevice",
+        "label":       "sounddevice",
+        "desc":        "Захват звука с микрофона",
+        "used_for":    "🎙 Запись с микрофона",
+        "required":    True,
+        "github_url":  "https://github.com/spatialaudio/python-sounddevice",
+    },
+    {
+        "import_name": "requests",
+        "pip_name":    "requests",
+        "label":       "requests",
+        "desc":        "HTTP-запросы: обновления, скачивание языков OCR",
+        "used_for":    "🔄 Обновления и языки OCR",
+        "required":    True,
+        "github_url":  "https://github.com/psf/requests",
+    },
+    {
+        "import_name": "openai",
+        "pip_name":    "openai",
+        "label":       "openai",
+        "desc":        "API-клиент для OpenAI, DeepSeek, Groq, OpenRouter",
+        "used_for":    "🤖 ИИ-конспекты",
+        "required":    True,
+        "github_url":  "https://github.com/openai/openai-python",
+    },
+    {
+        "import_name": "pytesseract",
+        "pip_name":    "pytesseract",
+        "label":       "pytesseract",
+        "desc":        "Python-обёртка для Tesseract OCR",
+        "used_for":    "📷 Фото → Текст",
+        "required":    False,
+        "github_url":  "https://github.com/madmaze/pytesseract",
+    },
+    {
+        "import_name": "PIL",
+        "pip_name":    "Pillow",
+        "label":       "Pillow",
+        "desc":        "Открытие и обработка изображений для OCR",
+        "used_for":    "📷 Фото → Текст",
+        "required":    False,
+        "github_url":  "https://github.com/python-pillow/Pillow",
+    },
     {
         "import_name": "pyaudiowpatch",
         "pip_name":    "PyAudioWPatch",
@@ -23,24 +98,1052 @@ PYAUDIO_PATCH = """
         "desc":        "Запись системного звука (WASAPI loopback, только Windows)",
         "used_for":    "🖥 Системный звук",
         "required":    False,
-<<<<<<< HEAD
-        "platforms":   ["win32"],
-=======
         "platforms":   ["win32"],           # ← ТОЛЬКО Windows, скрывать на Mac/Linux
->>>>>>> 588ac9d (-)
         "github_url":  "https://github.com/s0d3s/PyAudioWPatch",
     },
-"""
+    {
+        "import_name": "cv2",
+        "pip_name":    "opencv-python",
+        "label":       "OpenCV",
+        "desc":        "Веб-камера для съёмки фото в диалоге OCR",
+        "used_for":    "📷 Камера → OCR",
+        "required":    False,
+        "github_url":  "https://github.com/opencv/opencv-python",
+    },
+    {
+        "import_name": "google.generativeai",
+        "pip_name":    "google-generativeai",
+        "label":       "google-generativeai",
+        "desc":        "API-клиент для Google Gemini",
+        "used_for":    "🤖 ИИ провайдер Gemini",
+        "required":    False,
+        "github_url":  "https://github.com/google-gemini/generative-ai-python",
+    },
+]
 
-# ══════════════════════════════════════════════════════════════════════════════
-# ИСПРАВЛЕНИЕ 2:  _fill_pkg_rows — фильтрация по платформе
-# Найди метод _fill_pkg_rows и замени начало цикла for pkg in PACKAGES_INFO:
-# ══════════════════════════════════════════════════════════════════════════════
 
-FILL_ROWS_PATCH = """
+def _run_pip_show(pip_name: str) -> dict | None:
+    """
+    Запускает 'pip show <pip_name>' и возвращает dict с полями
+    {Name, Version, Location, ...} или None если пакет не найден.
+
+    Использует subprocess — единственный надёжный способ проверить
+    реальную pip-установку. importlib.util.find_spec НЕ используем:
+    в замороженном .exe он находит пакеты внутри _internal (PyInstaller-бандл)
+    и говорит «установлен», хотя pip их не ставил отдельно.
+    """
+    import subprocess
+    try:
+        from core.python_path import find_python_exe
+        python = find_python_exe()
+    except Exception:
+        python = sys.executable
+
+    flags = 0
+    if sys.platform == "win32":
+        try: flags = subprocess.CREATE_NO_WINDOW
+        except AttributeError: pass
+
+    try:
+        r = subprocess.run(
+            [python, "-m", "pip", "show", pip_name],
+            capture_output=True, text=True, timeout=15,
+            creationflags=flags,
+        )
+        if r.returncode != 0:
+            return None
+        info = {}
+        for line in r.stdout.splitlines():
+            if ":" in line:
+                k, _, v = line.partition(":")
+                info[k.strip()] = v.strip()
+        return info if info else None
+    except Exception:
+        return None
+
+
+# Кеш результатов pip show (сбрасывается после install/uninstall)
+_pip_show_cache: dict[str, dict | None] = {}
+
+
+def _pkg_info(pip_name: str, force_refresh: bool = False) -> dict | None:
+    """Возвращает pip show результат с кешированием."""
+    if force_refresh or pip_name not in _pip_show_cache:
+        _pip_show_cache[pip_name] = _run_pip_show(pip_name)
+    return _pip_show_cache.get(pip_name)
+
+
+def _is_package_installed(pip_name: str, import_name: str = "") -> bool:
+    """True если пакет реально установлен через pip (не из _internal бандла)."""
+    info = _pkg_info(pip_name)
+    if info is None:
+        return False
+    # Проверяем что путь установки НЕ внутри PyInstaller _internal
+    location = info.get("Location", "")
+    if "_internal" in location.replace("\\", "/"):
+        return False
+    return True
+
+
+def _get_package_path(pip_name: str) -> str:
+    """Возвращает реальный путь установки пакета или ''."""
+    info = _pkg_info(pip_name)
+    if not info:
+        return ""
+    location = info.get("Location", "")
+    if "_internal" in location.replace("\\", "/"):
+        return ""   # Это бандл, не реальная установка
+    name = info.get("Name", pip_name)
+    # Строим путь к папке пакета внутри site-packages
+    if location:
+        from pathlib import Path
+        # Пробуем найти реальную папку пакета
+        folder_name = name.lower().replace("-", "_")
+        for variant in [folder_name, name, name.lower()]:
+            p = Path(location) / variant
+            if p.exists():
+                return str(p)
+        return location  # Хотя бы site-packages
+    return ""
+
+
+class PkgCheckThread(QThread):
+    """Проверяет установку всех пакетов через 'pip show' параллельно."""
+    pkg_checked = pyqtSignal(str, bool, str)  # (pip_name, installed, path)
+
+    def __init__(self, pip_names: list[str]):
+        super().__init__()
+        self.pip_names = pip_names
+
+    def run(self):
+        import subprocess
+        try:
+            from core.python_path import find_python_exe
+            python = find_python_exe()
+        except Exception:
+            python = sys.executable
+
+        flags = 0
+        if sys.platform == "win32":
+            try: flags = subprocess.CREATE_NO_WINDOW
+            except AttributeError: pass
+
+        for pip_name in self.pip_names:
+            try:
+                r = subprocess.run(
+                    [python, "-m", "pip", "show", pip_name],
+                    capture_output=True, text=True, timeout=15,
+                    creationflags=flags,
+                )
+                if r.returncode != 0:
+                    _pip_show_cache[pip_name] = None
+                    self.pkg_checked.emit(pip_name, False, "")
+                    continue
+
+                info = {}
+                for line in r.stdout.splitlines():
+                    if ":" in line:
+                        k, _, v = line.partition(":")
+                        info[k.strip()] = v.strip()
+
+                _pip_show_cache[pip_name] = info
+                location = info.get("Location", "")
+
+                # Пакет внутри PyInstaller _internal — не считаем реально установленным
+                if "_internal" in location.replace("\\", "/"):
+                    self.pkg_checked.emit(pip_name, False, "")
+                    continue
+
+                # Ищем папку пакета
+                from pathlib import Path
+                folder_name = (info.get("Name", pip_name)
+                               .lower().replace("-", "_"))
+                pkg_path = ""
+                for variant in [folder_name,
+                                 info.get("Name", pip_name),
+                                 pip_name.lower().replace("-", "_")]:
+                    p = Path(location) / variant
+                    if p.exists():
+                        pkg_path = str(p)
+                        break
+                if not pkg_path and location:
+                    pkg_path = location
+
+                self.pkg_checked.emit(pip_name, True, pkg_path)
+
+            except Exception:
+                _pip_show_cache[pip_name] = None
+                self.pkg_checked.emit(pip_name, False, "")
+
+
+class PipThread(QThread):
+    """Устанавливает или удаляет pip-пакет в фоновом потоке."""
+    done = pyqtSignal(str, bool, str)   # (pip_name, success, full_output)
+
+    def __init__(self, action: str, pip_name: str):
+        super().__init__()
+        self.action   = action    # "install" | "uninstall"
+        self.pip_name = pip_name
+
+    def run(self):
+        try:
+            from core.python_path import find_python_exe
+            python = find_python_exe()
+        except RuntimeError as e:
+            self.done.emit(self.pip_name, False, str(e))
+            return
+
+        try:
+            if self.action == "install":
+                cmd = [python, "-m", "pip", "install", self.pip_name,
+                       "--disable-pip-version-check", "-v"]  # -v для подробного вывода
+            else:
+                cmd = [python, "-m", "pip", "uninstall", self.pip_name, "-y"]
+
+            creation_flags = 0
+            if sys.platform == "win32":
+                creation_flags = subprocess.CREATE_NO_WINDOW
+
+            r = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=300,
+                creationflags=creation_flags,
+            )
+            output = (r.stdout + "\n" + r.stderr).strip()
+            if r.returncode == 0:
+                self.done.emit(self.pip_name, True, output)
+            else:
+                self.done.emit(self.pip_name, False, output)
+        except Exception as e:
+            self.done.emit(self.pip_name, False, str(e))
+
+from core.summarizer import PROVIDERS, get_provider_config
+from ui.theme import get_colors
+
+SETTINGS_PATH = Path.home() / ".lesson_recorder" / "settings.json"
+
+DEFAULTS = {
+    "audio_source": "both",
+    "mic_device_index": None,
+    "whisper_model": "tiny",
+    "language": "auto",
+    "ai_provider": "deepseek",
+    "ai_api_key": "",
+    "ai_model": "deepseek-chat",
+    "ai_custom_url": "",
+    "ai_custom_model": "",
+    "theme": "dark",
+}
+
+
+def load_settings() -> dict:
+    if SETTINGS_PATH.exists():
+        try:
+            with open(SETTINGS_PATH) as f:
+                return {**DEFAULTS, **json.load(f)}
+        except Exception:
+            pass
+    return dict(DEFAULTS)
+
+
+def save_settings(settings: dict):
+    SETTINGS_PATH.parent.mkdir(exist_ok=True)
+    with open(SETTINGS_PATH, "w") as f:
+        json.dump(settings, f, indent=2)
+
+
+class SettingsWidget(QWidget):
+    theme_changed = pyqtSignal(str)   # "dark" | "light"
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.settings          = load_settings()
+        self._theme            = self.settings.get("theme", "dark")
+        self._pip_threads: dict[str, PipThread] = {}
+        self._pkg_rows:    dict[str, dict]       = {}
+        self._pkg_container    = None
+        self._pkg_vbox         = None
+        self._pkg_check_thread = None
+        self._build_ui()
+
+    def apply_theme(self, theme: str):
+        self._theme = theme
+        # Full rebuild would be heavy; easier to just re-apply stylesheet
+        c = get_colors(theme)
+        self.setStyleSheet(self._widget_stylesheet(c))
+
+    def _widget_stylesheet(self, c: dict) -> str:
+        bg_card = c.get("bg_card", c["bg_input"])
+        return f"""
+            QWidget {{ background: {c['bg_main']}; color: {c['text']}; }}
+            QScrollArea, QScrollArea > QWidget > QWidget {{ background: {c['bg_main']}; }}
+            QGroupBox {{
+                color: {c['text_muted']};
+                font-weight: 600; font-size: 11px;
+                text-transform: uppercase; letter-spacing: 0.8px;
+                border: 1px solid {c['border']};
+                border-radius: 10px; margin-top: 14px; padding-top: 18px;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin; left: 12px; padding: 0 6px;
+                background: {c['bg_main']};
+            }}
+            QLabel {{ color: {c['text']}; background: transparent; }}
+
+            /* ── ComboBox ── */
+            QComboBox {{
+                background: {c['bg_input']}; color: {c['text']};
+                border: 1px solid {c['border']}; border-radius: 6px;
+                padding: 5px 32px 5px 10px;
+                min-height: 20px;
+            }}
+            QComboBox:hover {{ border-color: {c['border_active']}; }}
+            QComboBox:focus {{ border-color: {c['border_active']}; outline: none; }}
+            QComboBox::drop-down {{
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 26px;
+                border-left: 1px solid {c['border']};
+                border-top-right-radius: 6px;
+                border-bottom-right-radius: 6px;
+                background: {c['bg_input']};
+            }}
+            QComboBox::down-arrow {{
+                width: 10px; height: 10px;
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 6px solid {c['text_muted']};
+            }}
+
+            /* ── Выпадающий список (dropdown popup) ── */
+            QComboBox QAbstractItemView {{
+                background: {bg_card};
+                color: {c['text']};
+                border: 1px solid {c['border_active']};
+                border-radius: 8px;
+                padding: 4px;
+                outline: none;
+                selection-background-color: {c['accent_blue']};
+                selection-color: #ffffff;
+            }}
+            QComboBox QAbstractItemView::item {{
+                padding: 6px 10px;
+                border-radius: 4px;
+                min-height: 24px;
+            }}
+            QComboBox QAbstractItemView::item:hover {{
+                background: {c['bg_hover']};
+                color: {c['text']};
+            }}
+            QComboBox QAbstractItemView::item:selected {{
+                background: {c['accent_blue']};
+                color: #ffffff;
+            }}
+            QComboBox QAbstractItemView QScrollBar:vertical {{
+                background: {bg_card};
+                width: 7px; border-radius: 4px;
+            }}
+            QComboBox QAbstractItemView QScrollBar::handle:vertical {{
+                background: {c['border']}; border-radius: 4px; min-height: 20px;
+            }}
+
+            QLineEdit {{
+                background: {c['bg_input']}; color: {c['text']};
+                border: 1px solid {c['border']}; border-radius: 6px; padding: 5px 10px;
+            }}
+            QLineEdit:focus {{ border-color: {c['border_active']}; }}
+            QCheckBox {{ color: {c['text']}; }}
+        """
+
+    def _build_ui(self):
+        c = get_colors(self._theme)
+
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("background: transparent;")
+
+        container = QWidget()
+        scroll.setWidget(container)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(scroll)
+
+        layout = QVBoxLayout(container)
+        layout.setSpacing(24)
+        layout.setContentsMargins(32, 32, 32, 32)
+
+        # ── Page title ────────────────────────────────────────────────────
+        title_row = QHBoxLayout()
+        title = QLabel("Настройки")
+        title.setStyleSheet(f"font-size: 22px; font-weight: 700; color: {c['text']};")
+        title_row.addWidget(title)
+        title_row.addStretch()
+
+        # Theme toggle
+        self.theme_btn = QPushButton()
+        self._update_theme_btn(c)
+        self.theme_btn.setFixedSize(100, 32)
+        self.theme_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.theme_btn.clicked.connect(self._toggle_theme)
+        title_row.addWidget(self.theme_btn)
+
+        layout.addLayout(title_row)
+
+        # ── Аудио ─────────────────────────────────────────────────────────
+        audio_group = QGroupBox("Запись аудио")
+        audio_form = QFormLayout(audio_group)
+        audio_form.setSpacing(12)
+        audio_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        self.combo_source = QComboBox()
+        self.combo_source.addItems(["Микрофон", "Системный звук", "Оба источника"])
+        src_map = {"mic": 0, "system": 1, "both": 2}
+        self.combo_source.setCurrentIndex(src_map.get(self.settings["audio_source"], 2))
+        audio_form.addRow("Источник:", self.combo_source)
+
+        # ✅ НОВОЕ: Выбор устройства ввода
+        self.combo_mic_device = QComboBox()
+        # Ограничиваем ширину — длинные имена устройств не должны растягивать форму
+        self.combo_mic_device.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.combo_mic_device.setMinimumContentsLength(20)
+        self.combo_mic_device.setMaximumWidth(360)
+        self._populate_mic_devices()
+        audio_form.addRow("Микрофон:", self.combo_mic_device)
+
+        mic_hint = QLabel("Выбор устройства применяется при записи микрофона или обоих источников")
+        mic_hint.setStyleSheet(f"color: {c['text_muted']}; font-size: 11px;")
+        mic_hint.setWordWrap(True)
+        audio_form.addRow("", mic_hint)
+
+        layout.addWidget(audio_group)
+
+        # ── Whisper ───────────────────────────────────────────────────────
+        whisper_group = QGroupBox("Транскрипция — Whisper (офлайн)")
+        whisper_form = QFormLayout(whisper_group)
+        whisper_form.setSpacing(12)
+        whisper_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        self.combo_whisper_model = QComboBox()
+        models = ["tiny", "base", "small", "medium", "large-v2", "large-v3"]
+        self.combo_whisper_model.addItems(models)
+        if self.settings["whisper_model"] in models:
+            self.combo_whisper_model.setCurrentIndex(models.index(self.settings["whisper_model"]))
+        whisper_form.addRow("Модель:", self.combo_whisper_model)
+
+        whisper_info = QLabel(
+            "<b>tiny</b> — самая быстрая, загрузка ~75 МБ  ·  "
+            "<b>base</b> — быстрая, ~140 МБ  ·  "
+            "<b>small</b> — хорошая, ~460 МБ  ·  "
+            "<b>medium</b> — отличная, ~1.5 ГБ  ·  "
+            "<b>large</b> — лучшая, ~3 ГБ"
+        )
+        whisper_info.setStyleSheet(f"color: {c['text_muted']}; font-size: 11px;")
+        whisper_info.setWordWrap(True)
+        whisper_form.addRow("", whisper_info)
+
+        self.combo_lang = QComboBox()
+        langs = {
+            "auto": "Авто-определение", "ru": "Русский", "en": "English",
+            "uk": "Українська", "de": "Deutsch", "fr": "Français",
+            "es": "Español", "zh": "中文", "ja": "日本語",
+        }
+        for code, name in langs.items():
+            self.combo_lang.addItem(name, code)
+        for i in range(self.combo_lang.count()):
+            if self.combo_lang.itemData(i) == self.settings.get("language", "auto"):
+                self.combo_lang.setCurrentIndex(i)
+                break
+        whisper_form.addRow("Язык:", self.combo_lang)
+
+        layout.addWidget(whisper_group)
+
+        # ── ИИ провайдер ──────────────────────────────────────────────────
+        ai_group = QGroupBox("ИИ для конспектов")
+        ai_layout = QVBoxLayout(ai_group)
+        ai_layout.setSpacing(14)
+
+        # Выбор провайдера
+        provider_row = QHBoxLayout()
+        provider_lbl = QLabel("Провайдер:")
+        provider_lbl.setFixedWidth(120)
+        provider_lbl.setStyleSheet(f"color: {c['text_muted']};")
+
+        self.combo_provider = QComboBox()
+        self.combo_provider.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.combo_provider.setMinimumContentsLength(18)
+        self.combo_provider.setMaximumWidth(320)
+        for pid, pcfg in PROVIDERS.items():
+            rf_tag = " ✅ РФ" if pcfg.get("rf_available") else ""
+            self.combo_provider.addItem(pcfg["name"] + rf_tag, pid)
+
+        current_provider = self.settings.get("ai_provider", "deepseek")
+        for i in range(self.combo_provider.count()):
+            if self.combo_provider.itemData(i) == current_provider:
+                self.combo_provider.setCurrentIndex(i)
+                break
+        self.combo_provider.currentIndexChanged.connect(self._on_provider_changed)
+
+        provider_row.addWidget(provider_lbl)
+        provider_row.addWidget(self.combo_provider)
+        ai_layout.addLayout(provider_row)
+
+        # Инфо о провайдере
+        self.provider_info = QLabel("")
+        self.provider_info.setStyleSheet(f"""
+            color: {c['accent_green']};
+            font-size: 11px;
+            padding: 6px 10px;
+            background: transparent;
+            border: 1px solid {c['accent_green']};
+            border-radius: 6px;
+        """)
+        self.provider_info.setWordWrap(True)
+        ai_layout.addWidget(self.provider_info)
+
+        # API ключ
+        key_row = QHBoxLayout()
+        key_lbl = QLabel("API ключ:")
+        key_lbl.setFixedWidth(120)
+        key_lbl.setStyleSheet(f"color: {c['text_muted']};")
+
+        self.edit_api_key = QLineEdit(self.settings.get("ai_api_key", ""))
+        self.edit_api_key.setEchoMode(QLineEdit.EchoMode.Password)
+
+        self.toggle_key_btn = QPushButton("👁")
+        self.toggle_key_btn.setFixedSize(32, 32)
+        self.toggle_key_btn.setCheckable(True)
+        self.toggle_key_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {c['bg_input']}; border: 1px solid {c['border']};
+                border-radius: 6px; font-size: 14px;
+            }}
+            QPushButton:hover {{ background: {c['bg_hover']}; }}
+            QPushButton:checked {{ background: {c['bg_selected']}; }}
+        """)
+        self.toggle_key_btn.toggled.connect(
+            lambda on: self.edit_api_key.setEchoMode(
+                QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password
+            )
+        )
+
+        key_row.addWidget(key_lbl)
+        key_row.addWidget(self.edit_api_key)
+        key_row.addWidget(self.toggle_key_btn)
+        ai_layout.addLayout(key_row)
+
+        # Модель — QStackedWidget вместо двух виджетов в одной строке
+        model_row = QHBoxLayout()
+        model_lbl = QLabel("Модель:")
+        model_lbl.setFixedWidth(120)
+        model_lbl.setStyleSheet(f"color: {c['text_muted']};")
+
+        # ✅ ИСПРАВЛЕНО: раньше combo и lineEdit были в одной строке одновременно,
+        # при растяжении окна они визуально накладывались.
+        # Теперь — один контейнер-стек, который показывает только один виджет.
+        self._model_stack = QStackedWidget()
+        self.combo_ai_model = QComboBox()
+        self.combo_ai_model.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.combo_ai_model.setMinimumContentsLength(20)
+
+        self.edit_custom_model = QLineEdit()
+        self.edit_custom_model.setPlaceholderText("Введи название модели вручную")
+
+        self._model_stack.addWidget(self.combo_ai_model)   # index 0 — стандартный
+        self._model_stack.addWidget(self.edit_custom_model) # index 1 — кастомный
+
+        model_row.addWidget(model_lbl)
+        model_row.addWidget(self._model_stack)
+        ai_layout.addLayout(model_row)
+
+        # Инфо о выбранной модели — отступ через пустой лейбл, без хардкодного padding-left
+        model_info_row = QHBoxLayout()
+        _spacer_lbl = QLabel()
+        _spacer_lbl.setFixedWidth(120)
+        self.model_info_lbl = QLabel("")
+        self.model_info_lbl.setStyleSheet(f"color: {c['text_muted']}; font-size: 11px;")
+        self.model_info_lbl.setWordWrap(True)
+        model_info_row.addWidget(_spacer_lbl)
+        model_info_row.addWidget(self.model_info_lbl)
+        ai_layout.addLayout(model_info_row)
+        self.combo_ai_model.currentIndexChanged.connect(self._on_model_changed)
+
+        # Кастомный URL
+        url_row = QHBoxLayout()
+        self.url_lbl = QLabel("URL API:")
+        self.url_lbl.setFixedWidth(120)
+        self.url_lbl.setStyleSheet(f"color: {c['text_muted']};")
+        self.edit_custom_url = QLineEdit(self.settings.get("ai_custom_url", ""))
+        self.edit_custom_url.setPlaceholderText("http://localhost:1234/v1")
+        url_row.addWidget(self.url_lbl)
+        url_row.addWidget(self.edit_custom_url)
+        ai_layout.addLayout(url_row)
+
+        # Кнопки
+        btn_row = QHBoxLayout()
+        self.test_btn = QPushButton("🔌 Проверить соединение")
+        self.test_btn.setStyleSheet(self._secondary_btn_style(c))
+        self.test_btn.clicked.connect(self._test_connection)
+
+        self.signup_btn = QPushButton("🌐 Получить ключ →")
+        self.signup_btn.setStyleSheet(self._link_btn_style(c))
+        self.signup_btn.clicked.connect(self._open_signup)
+
+        btn_row.addWidget(self.test_btn)
+        btn_row.addWidget(self.signup_btn)
+        btn_row.addStretch()
+        ai_layout.addLayout(btn_row)
+
+        layout.addWidget(ai_group)
+
+        # ── Пакеты Python ─────────────────────────────────────────────────
+        layout.addWidget(self._build_packages_group(c))
+
+        # ── Сохранить ─────────────────────────────────────────────────────
+        save_btn = QPushButton("💾  Сохранить настройки")
+        save_btn.clicked.connect(self._save)
+        save_btn.setFixedHeight(44)
+        save_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {c['accent_blue']};
+                color: white; border: none;
+                border-radius: 8px;
+                font-size: 14px; font-weight: 600;
+                padding: 0 32px;
+            }}
+            QPushButton:hover {{ background: {c['accent_blue']}cc; }}
+        """)
+        layout.addWidget(save_btn, alignment=Qt.AlignmentFlag.AlignLeft)
+        layout.addStretch()
+
+        # Инициализируем под текущий провайдер
+        self._on_provider_changed()
+        self.setStyleSheet(self._widget_stylesheet(c))
+
+    # ── Устройства ввода ──────────────────────────────────────────────────
+
+    def _populate_mic_devices(self):
+        self.combo_mic_device.clear()
+        self.combo_mic_device.addItem("По умолчанию", None)
+
+        try:
+            from core.recorder import get_input_devices
+            devices = get_input_devices()
+            for dev in devices:
+                name = dev["name"][:60]
+                self.combo_mic_device.addItem(f"{name}", dev["index"])
+        except Exception:
+            pass
+
+        # Восстанавливаем выбранное устройство
+        saved_idx = self.settings.get("mic_device_index", None)
+        for i in range(self.combo_mic_device.count()):
+            if self.combo_mic_device.itemData(i) == saved_idx:
+                self.combo_mic_device.setCurrentIndex(i)
+                break
+
+    # ── Тема ──────────────────────────────────────────────────────────────
+
+    def _update_theme_btn(self, c: dict):
+        if self._theme == "dark":
+            self.theme_btn.setText("☀  Светлая")
+            self.theme_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {c['bg_input']}; color: {c['text']};
+                    border: 1px solid {c['border']}; border-radius: 8px;
+                    font-size: 12px;
+                }}
+                QPushButton:hover {{ background: {c['bg_hover']}; }}
+            """)
+        else:
+            self.theme_btn.setText("🌙  Тёмная")
+            self.theme_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {c['bg_input']}; color: {c['text']};
+                    border: 1px solid {c['border']}; border-radius: 8px;
+                    font-size: 12px;
+                }}
+                QPushButton:hover {{ background: {c['bg_hover']}; }}
+            """)
+
+    def _toggle_theme(self):
+        new_theme = "light" if self._theme == "dark" else "dark"
+        self._theme = new_theme
+        c = get_colors(new_theme)
+        self._update_theme_btn(c)
+        self.theme_changed.emit(new_theme)
+
+    # ── Провайдер изменился ───────────────────────────────────────────────
+
+    def _on_provider_changed(self):
+        provider_id = self.combo_provider.currentData()
+        cfg = get_provider_config(provider_id)
+        c = get_colors(self._theme)
+
+        self.provider_info.setText(cfg["free_info"])
+
+        is_gigachat = (provider_id == "gigachat")
+        if is_gigachat:
+            self.provider_info.setText(
+                cfg["free_info"] + "\n"
+                "Ключ: developers.sber.ru/studio → создай проект → «Авторизационные данные»"
+            )
+
+        self.edit_api_key.setPlaceholderText(cfg.get("key_hint", ""))
+
+        is_custom = provider_id == "custom"
+        # ✅ ИСПРАВЛЕНО: переключаем стек (index 0 = combo, 1 = lineEdit)
+        # вместо setVisible() на двух виджетах в одной строке
+        self._model_stack.setCurrentIndex(1 if is_custom else 0)
+        self.url_lbl.setVisible(is_custom)
+        self.edit_custom_url.setVisible(is_custom)
+        self.signup_btn.setVisible(bool(cfg.get("signup_url")))
+
+        if not is_custom:
+            self.combo_ai_model.clear()
+            model_info = cfg.get("model_info", {})
+            for m in cfg["models"]:
+                # Добавляем информацию о модели в tooltip через addItem
+                self.combo_ai_model.addItem(m, m)
+
+            saved_model = self.settings.get("ai_model", cfg["default_model"])
+            restored = False
+            for i in range(self.combo_ai_model.count()):
+                if self.combo_ai_model.itemData(i) == saved_model:
+                    self.combo_ai_model.setCurrentIndex(i)
+                    restored = True
+                    break
+            if not restored and self.combo_ai_model.count() > 0:
+                # Восстанавливаем default
+                for i in range(self.combo_ai_model.count()):
+                    if self.combo_ai_model.itemData(i) == cfg["default_model"]:
+                        self.combo_ai_model.setCurrentIndex(i)
+                        break
+
+            self._on_model_changed()
+        else:
+            self.edit_custom_model.setText(self.settings.get("ai_custom_model", ""))
+            self.model_info_lbl.setText("")
+
+    def _on_model_changed(self):
+        provider_id = self.combo_provider.currentData()
+        cfg = get_provider_config(provider_id)
+        model = self.combo_ai_model.currentData() or ""
+        info = cfg.get("model_info", {}).get(model, "")
+        self.model_info_lbl.setText(info)
+
+    # ── Получить текущую модель ───────────────────────────────────────────
+
+    def _get_current_model(self) -> str:
+        provider_id = self.combo_provider.currentData()
+        if provider_id == "custom":
+            return self.edit_custom_model.text().strip()
+        return self.combo_ai_model.currentData() or ""
+
+    def _get_current_url(self) -> str:
+        provider_id = self.combo_provider.currentData()
+        if provider_id == "custom":
+            return self.edit_custom_url.text().strip()
+        return get_provider_config(provider_id)["base_url"]
+
+    # ── Проверка соединения ───────────────────────────────────────────────
+
+    def _test_connection(self):
+        import requests as req
+        provider_id = self.combo_provider.currentData()
+        key = self.edit_api_key.text().strip()
+        model = self._get_current_model()
+        base_url = self._get_current_url()
+
+        if not base_url:
+            QMessageBox.warning(self, "Нет URL", "Укажи URL API.")
+            return
+        if not model:
+            QMessageBox.warning(self, "Нет модели", "Укажи модель.")
+            return
+
+        headers = {"Content-Type": "application/json"}
+
+        if provider_id == "gigachat":
+            if not key:
+                QMessageBox.warning(self, "Нет ключа", "Укажи авторизационные данные GigaChat.")
+                return
+            try:
+                import uuid
+                auth_resp = req.post(
+                    "https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
+                    headers={
+                        "Authorization": f"Basic {key}",
+                        "RqUID": str(uuid.uuid4()),
+                        "Content-Type": "application/x-www-form-urlencoded",
+                    },
+                    data={"scope": "GIGACHAT_API_PERS"},
+                    verify=False,
+                    timeout=10,
+                )
+                auth_resp.raise_for_status()
+                token = auth_resp.json()["access_token"]
+                headers["Authorization"] = f"Bearer {token}"
+            except Exception as e:
+                QMessageBox.critical(self, "❌ Ошибка авторизации GigaChat",
+                    f"Не удалось получить токен:\n{e}")
+                return
+        elif key:
+            headers["Authorization"] = f"Bearer {key}"
+
+        if provider_id == "openrouter":
+            headers["HTTP-Referer"] = "https://github.com/lesson-recorder"
+            headers["X-Title"] = "LessonRecorder"
+
+        verify_ssl = (provider_id != "gigachat")
+        try:
+            r = req.post(
+                f"{base_url}/chat/completions",
+                headers=headers,
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": "Hi"}],
+                    "max_tokens": 5,
+                },
+                timeout=15,
+                verify=verify_ssl,
+            )
+            if r.status_code == 200:
+                QMessageBox.information(self, "✅ Успех",
+                    f"Соединение с «{self.combo_provider.currentText()}» работает!\n"
+                    f"Модель: {model}")
+            elif r.status_code == 401:
+                QMessageBox.critical(self, "❌ Ошибка", "Неверный API ключ.")
+            elif r.status_code == 404:
+                QMessageBox.warning(self, "⚠️ Модель не найдена",
+                    f"Модель «{model}» не найдена.")
+            else:
+                QMessageBox.warning(self, "⚠️ Ошибка",
+                    f"Код {r.status_code}:\n{r.text[:300]}")
+        except req.exceptions.ConnectionError:
+            QMessageBox.critical(self, "❌ Нет соединения", f"Не удалось подключиться:\n{base_url}")
+        except Exception as e:
+            QMessageBox.critical(self, "❌ Ошибка", str(e))
+
+    def _open_signup(self):
+        import webbrowser
+        provider_id = self.combo_provider.currentData()
+        url = get_provider_config(provider_id).get("signup_url", "")
+        if url:
+            webbrowser.open(f"https://{url}")
+
+    # ── Пакеты ────────────────────────────────────────────────────────────
+
+    def _build_packages_group(self, c: dict) -> QGroupBox:
+        group = QGroupBox("Python-зависимости")
+        outer = QVBoxLayout(group)
+        outer.setSpacing(6)
+        outer.setContentsMargins(16, 16, 16, 16)
+
+        # Кнопка "установить всё"
+        hdr = QHBoxLayout()
+        lbl_pkg = QLabel("Пакет")
+        lbl_pkg.setStyleSheet(f"color:{c['text_muted']};font-size:11px;font-weight:600;")
+        hdr.addWidget(lbl_pkg)
+        hdr.addStretch()
+        btn_all = QPushButton("⬇  Установить всё отсутствующее")
+        btn_all.setFixedHeight(26)
+        btn_all.setStyleSheet(
+            f"QPushButton{{background:{c['accent_blue']};color:#fff;border:none;"
+            f"border-radius:5px;font-size:11px;padding:0 12px;}}"
+            f"QPushButton:hover{{background:{c['accent_blue']}cc;}}"
+        )
+        btn_all.clicked.connect(self._install_missing)
+        hdr.addWidget(btn_all)
+        outer.addLayout(hdr)
+
+        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"color:{c['border']};")
+        outer.addWidget(sep)
+
+        # ── Строка Tesseract OCR (не pip-пакет, отдельный установщик) ────
+        outer.addWidget(self._build_tesseract_row(c))
+
+        sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
+        sep2.setStyleSheet(f"color:{c['border']};")
+        outer.addWidget(sep2)
+
+        # Контейнер для строк — сохраняем ссылку чтобы перестраивать
+        self._pkg_container = QWidget()
+        self._pkg_container.setStyleSheet("background:transparent;")
+        self._pkg_vbox = QVBoxLayout(self._pkg_container)
+        self._pkg_vbox.setSpacing(2)
+        self._pkg_vbox.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(self._pkg_container)
+
+        self._fill_pkg_rows(c)
+        return group
+
+    def _build_tesseract_row(self, c: dict) -> QWidget:
+        """Строка Tesseract OCR — проверяется через shutil.which + реестр, не pip."""
+        from core.tesseract_langs import find_tesseract_cmd
+
+        row_w = QWidget(); row_w.setStyleSheet("background:transparent;")
+        outer = QVBoxLayout(row_w)
+        outer.setContentsMargins(0, 4, 0, 4)
+        outer.setSpacing(2)
+
+        main_row = QWidget(); main_row.setStyleSheet("background:transparent;")
+        hl = QHBoxLayout(main_row)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.setSpacing(8)
+
+        tess_path = find_tesseract_cmd()
+        installed = bool(tess_path)
+
+        status_lbl = QLabel("✅" if installed else "❌")
+        status_lbl.setFixedWidth(22)
+        status_lbl.setStyleSheet("font-size:13px;")
+        hl.addWidget(status_lbl)
+        self._tess_status_lbl = status_lbl
+
+        name_row = QHBoxLayout(); name_row.setSpacing(6)
+        name_lbl = QLabel("Tesseract OCR")
+        name_lbl.setStyleSheet(f"color:{c['text']};font-size:12px;font-weight:600;")
+        name_row.addWidget(name_lbl)
+        badge = QLabel("📷 OCR-движок")
+        badge.setStyleSheet(f"color:{c['accent_blue']};font-size:10px;")
+        name_row.addWidget(badge)
+        name_row.addStretch()
+        nw = QWidget(); nw.setStyleSheet("background:transparent;"); nw.setLayout(name_row)
+        hl.addWidget(nw, stretch=1)
+
+        def _small_btn(icon: str, tip: str) -> QPushButton:
+            b = QPushButton(icon)
+            b.setFixedSize(26, 26)
+            b.setToolTip(tip)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setStyleSheet(
+                f"QPushButton{{background:{c['bg_input']};color:{c['text_muted']};"
+                f"border:1px solid {c['border']};border-radius:5px;font-size:12px;padding:0;}}"
+                f"QPushButton:hover{{background:{c['bg_hover']};color:{c['text']};}}")
+            return b
+
+        btn_copy = _small_btn("⌨", "Скопировать команду установки")
+        btn_copy.clicked.connect(lambda: self._copy_pip_cmd(
+            "winget install UB-Mannheim.TesseractOCR  # или скачай с github.com/UB-Mannheim/tesseract/wiki"))
+        hl.addWidget(btn_copy)
+
+        btn_gh = _small_btn("🐙", "Открыть GitHub Tesseract")
+        btn_gh.clicked.connect(lambda: __import__("webbrowser").open(
+            "https://github.com/UB-Mannheim/tesseract/wiki"))
+        hl.addWidget(btn_gh)
+
+        action_lbl = QLabel("")
+        action_lbl.setStyleSheet(f"color:{c['text_muted']};font-size:11px;min-width:70px;")
+        hl.addWidget(action_lbl)
+        self._tess_action_lbl = action_lbl
+
+        tess_btn = QPushButton()
+        tess_btn.setFixedHeight(26); tess_btn.setMinimumWidth(90)
+        self._tess_btn = tess_btn
+
+        if installed:
+            tess_btn.setText("🔍 Найден")
+            tess_btn.setEnabled(False)
+            tess_btn.setStyleSheet(
+                f"QPushButton{{background:{c['bg_input']};color:{c['text_muted']};"
+                f"border:1px solid {c['border']};border-radius:5px;font-size:11px;padding:0 10px;}}")
+        else:
+            tess_btn.setText("⬇ Установить")
+            tess_btn.setStyleSheet(
+                f"QPushButton{{background:{c['accent_blue']};color:#fff;border:none;"
+                f"border-radius:5px;font-size:11px;padding:0 10px;}}"
+                f"QPushButton:hover{{background:{c['accent_blue']}cc;}}")
+            tess_btn.clicked.connect(self._install_tesseract)
+        hl.addWidget(tess_btn)
+        outer.addWidget(main_row)
+
+        # Путь / описание
+        desc_row = QHBoxLayout(); desc_row.setSpacing(6)
+        desc_row.setContentsMargins(30, 0, 0, 0)
+        lbl_tess_desc = QLabel("Движок распознавания текста на фото (OCR)")
+        lbl_tess_desc.setStyleSheet(f"color:{c['text_muted']};font-size:11px;")
+        desc_row.addWidget(lbl_tess_desc)
+
+        path_lbl = QLabel()
+        path_lbl.setStyleSheet(
+            f"color:{c['accent_blue']};font-size:10px;text-decoration:underline;")
+        path_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+        if tess_path:
+            short = tess_path if len(tess_path) < 55 else "…" + tess_path[-52:]
+            path_lbl.setText(short)
+            path_lbl.setToolTip(tess_path)
+            import os as _os
+            from pathlib import Path as _P
+            tess_dir = str(_P(tess_path).parent)
+            path_lbl.mousePressEvent = lambda e, d=tess_dir: self._open_folder(d)
+        else:
+            path_lbl.setText("не найден")
+            path_lbl.setStyleSheet("color:#f44336;font-size:10px;")
+        desc_row.addWidget(path_lbl)
+        desc_row.addStretch()
+        outer.addLayout(desc_row)
+        self._tess_path_lbl = path_lbl
+
+        return row_w
+
+    def _install_tesseract(self):
+        """Открывает диалог установки Tesseract."""
+        try:
+            from core.tesseract_langs import TesseractLangsDialog
+            dlg = TesseractLangsDialog(parent=self)
+            dlg.exec()
+            # После закрытия — перепроверяем
+            self._recheck_tesseract()
+        except Exception as e:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(self, "Tesseract",
+                f"Установи Tesseract вручную:\n"
+                f"  winget install UB-Mannheim.TesseractOCR\n"
+                f"или скачай с:\n"
+                f"  github.com/UB-Mannheim/tesseract/wiki\n\n{e}")
+
+    def _recheck_tesseract(self):
+        """Перепроверяет наличие Tesseract и обновляет UI."""
+        from core import tesseract_langs as tl
+        tl._tesseract_cmd_cache = False           # сбрасываем кеш
+        tess_path = tl.find_tesseract_cmd()
+        c = get_colors(self._theme)
+
+        if hasattr(self, "_tess_status_lbl"):
+            self._tess_status_lbl.setText("✅" if tess_path else "❌")
+        if hasattr(self, "_tess_path_lbl"):
+            if tess_path:
+                short = tess_path if len(tess_path) < 55 else "…" + tess_path[-52:]
+                self._tess_path_lbl.setText(short)
+                self._tess_path_lbl.setToolTip(tess_path)
+                self._tess_path_lbl.setStyleSheet(
+                    f"color:{c['accent_blue']};font-size:10px;text-decoration:underline;")
+                from pathlib import Path
+                tess_dir = str(Path(tess_path).parent)
+                self._tess_path_lbl.mousePressEvent = (
+                    lambda e, d=tess_dir: self._open_folder(d))
+            else:
+                self._tess_path_lbl.setText("не найден")
+                self._tess_path_lbl.setStyleSheet("color:#f44336;font-size:10px;")
+        if hasattr(self, "_tess_btn") and tess_path:
+            self._tess_btn.setText("🔍 Найден")
+            self._tess_btn.setEnabled(False)
+            self._tess_btn.setStyleSheet(
+                f"QPushButton{{background:{c['bg_input']};color:{c['text_muted']};"
+                f"border:1px solid {c['border']};border-radius:5px;"
+                f"font-size:11px;padding:0 10px;}}")
+        if hasattr(self, "_tess_action_lbl") and tess_path:
+            self._tess_action_lbl.setText("✅ Готово")
+
     def _fill_pkg_rows(self, c: dict | None = None):
+        """Заполняет строки. Проверка установки идёт в фоне через PkgCheckThread."""
         if c is None:
             c = get_colors(self._theme)
+
+        # Очищаем старые виджеты
         while self._pkg_vbox.count():
             item = self._pkg_vbox.takeAt(0)
             if item.widget():
@@ -53,95 +1156,294 @@ FILL_ROWS_PATCH = """
             if not pkg.get("platforms") or sys.platform in pkg["platforms"]
         ]
 
-<<<<<<< HEAD
-        # Сначала рисуем все строки с "🔍 проверяю…"
-=======
->>>>>>> 588ac9d (-)
         for pkg in visible_packages:
             row_w = self._build_pkg_row(pkg, c, checking=True)
             self._pkg_vbox.addWidget(row_w)
 
+        # Запускаем фоновую проверку
         self._start_pkg_check()
-"""
 
-# ══════════════════════════════════════════════════════════════════════════════
-# ИСПРАВЛЕНИЕ 3:  _start_pkg_check — передавать только видимые пакеты
-# Замени метод _start_pkg_check:
-# ══════════════════════════════════════════════════════════════════════════════
-
-START_PKG_CHECK_PATCH = """
     def _start_pkg_check(self):
-<<<<<<< HEAD
-        """Запускает PkgCheckThread для видимых пакетов параллельно."""
-        _pip_show_cache.clear()
-=======
         _pip_show_cache.clear()
         # Проверяем только те пакеты, строки которых реально созданы
->>>>>>> 588ac9d (-)
         pip_names = list(self._pkg_rows.keys())
         if not pip_names:
             return
         t = PkgCheckThread(pip_names)
         t.pkg_checked.connect(self._on_pkg_checked)
         t.start()
-        self._pkg_check_thread = t
-"""
+        self._pkg_check_thread = t  # сохраняем чтобы не был GC-собран
 
-# ══════════════════════════════════════════════════════════════════════════════
-# ИСПРАВЛЕНИЕ 4:  _install_missing — фильтрация по платформе
-# Замени метод _install_missing:
-# ══════════════════════════════════════════════════════════════════════════════
+    def _on_pkg_checked(self, pip_name: str, installed: bool, pkg_path: str):
+        """Вызывается из фона для каждого пакета после pip show."""
+        row = self._pkg_rows.get(pip_name)
+        if not row:
+            return
+        c = get_colors(self._theme)
 
-INSTALL_MISSING_PATCH = """
+        row["installed"] = installed
+        row["status_lbl"].setText("✅" if installed else "❌")
+
+        # Путь
+        path_lbl = row.get("path_lbl")
+        if path_lbl:
+            if installed and pkg_path:
+                short = pkg_path if len(pkg_path) < 55 else "…" + pkg_path[-52:]
+                path_lbl.setText(short)
+                path_lbl.setToolTip(pkg_path)
+                path_lbl.setStyleSheet(
+                    f"color:{c['accent_blue']};font-size:10px;text-decoration:underline;")
+                path_lbl.mousePressEvent = lambda e, p=pkg_path: self._open_folder(p)
+            elif installed:
+                path_lbl.setText("(путь не найден)")
+                path_lbl.setStyleSheet(f"color:{c['text_muted']};font-size:10px;")
+            else:
+                path_lbl.setText("не установлен")
+                path_lbl.setStyleSheet("color:#f44336;font-size:10px;")
+
+        # Кнопка
+        btn = row.get("btn")
+        if btn:
+            btn.setEnabled(True)
+            try: btn.clicked.disconnect()
+            except Exception: pass
+            if installed:
+                btn.setText("🗑 Удалить")
+                btn.setStyleSheet(
+                    "QPushButton{background:#3a1a1a;color:#f44336;border:none;"
+                    "border-radius:5px;font-size:11px;padding:0 10px;}"
+                    "QPushButton:hover{background:#5a2020;}"
+                    "QPushButton:disabled{background:#1a1a1a;color:#555;}")
+                btn.clicked.connect(lambda checked, pn=pip_name: self._uninstall_by_name(pn))
+            else:
+                btn.setText("⬇ Установить")
+                btn.setStyleSheet(
+                    f"QPushButton{{background:{c['accent_blue']};color:#fff;border:none;"
+                    f"border-radius:5px;font-size:11px;padding:0 10px;}}"
+                    f"QPushButton:hover{{background:{c['accent_blue']}cc;}}"
+                    f"QPushButton:disabled{{background:#1a2a3a;color:#555;}}")
+                btn.clicked.connect(lambda checked, pn=pip_name: self._install_by_name(pn))
+
+    def _build_pkg_row(self, pkg: dict, c: dict, checking: bool = False) -> QWidget:
+        pip_name  = pkg["pip_name"]
+        # При checking=True статус пока неизвестен — покажем 🔍
+        installed = False
+        pkg_path  = ""
+
+        row_w = QWidget()
+        row_w.setStyleSheet("background:transparent;")
+
+        # ── Вертикальная обёртка (основная строка + путь) ────────────────
+        outer = QVBoxLayout(row_w)
+        outer.setContentsMargins(0, 4, 0, 4)
+        outer.setSpacing(2)
+
+        # ── Основная строка ──────────────────────────────────────────────
+        main_row = QWidget()
+        main_row.setStyleSheet("background:transparent;")
+        hl = QHBoxLayout(main_row)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.setSpacing(8)
+
+        # Статус — 🔍 пока идёт проверка
+        status_lbl = QLabel("🔍")
+        status_lbl.setFixedWidth(22)
+        status_lbl.setStyleSheet("font-size:13px;")
+        hl.addWidget(status_lbl)
+
+        # Имя + бейджи
+        name_row = QHBoxLayout(); name_row.setSpacing(6)
+        name_lbl = QLabel(pkg["label"])
+        name_lbl.setStyleSheet(f"color:{c['text']};font-size:12px;font-weight:600;")
+        name_row.addWidget(name_lbl)
+
+        badge = QLabel(pkg["used_for"])
+        badge.setStyleSheet(f"color:{c['accent_blue']};font-size:10px;")
+        name_row.addWidget(badge)
+
+        if pkg.get("required"):
+            req = QLabel("обязательный")
+            req.setStyleSheet(
+                f"color:#888;font-size:10px;background:{c['bg_input']};"
+                "border-radius:3px;padding:1px 6px;")
+            name_row.addWidget(req)
+
+        name_widget = QWidget(); name_widget.setStyleSheet("background:transparent;")
+        name_widget.setLayout(name_row)
+        hl.addWidget(name_widget, stretch=1)
+
+        # ── Маленькие кнопки: терминал + github ─────────────────────────
+        def _small_btn(icon_text: str, tooltip: str) -> QPushButton:
+            b = QPushButton(icon_text)
+            b.setFixedSize(26, 26)
+            b.setToolTip(tooltip)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setStyleSheet(
+                f"QPushButton{{background:{c['bg_input']};color:{c['text_muted']};"
+                f"border:1px solid {c['border']};border-radius:5px;"
+                f"font-size:12px;padding:0;}}"
+                f"QPushButton:hover{{background:{c['bg_hover']};color:{c['text']};}}")
+            return b
+
+        pip_cmd = f"pip install {pip_name}"
+
+        # Кнопка копирования pip-команды
+        btn_copy = _small_btn("⌨", f"Скопировать: {pip_cmd}")
+        btn_copy.clicked.connect(
+            lambda checked, cmd=pip_cmd: self._copy_pip_cmd(cmd))
+        hl.addWidget(btn_copy)
+
+        # Кнопка GitHub
+        gh_url = pkg.get("github_url", "")
+        if gh_url:
+            btn_gh = _small_btn("🐙", f"Открыть GitHub: {gh_url}")
+            btn_gh.clicked.connect(
+                lambda checked, url=gh_url: __import__("webbrowser").open(url))
+            hl.addWidget(btn_gh)
+
+        # Статус-метка (прогресс/готово/ошибка)
+        action_lbl = QLabel("")
+        action_lbl.setStyleSheet(f"color:{c['text_muted']};font-size:11px;min-width:70px;")
+        hl.addWidget(action_lbl)
+
+        # Кнопка — disabled пока идёт проверка
+        btn = QPushButton("🔍")
+        btn.setFixedHeight(26)
+        btn.setMinimumWidth(90)
+        btn.setEnabled(False)
+        btn.setStyleSheet(
+            f"QPushButton{{background:{c['bg_input']};color:{c['text_muted']};"
+            f"border:1px solid {c['border']};border-radius:5px;font-size:11px;padding:0 10px;}}"
+            f"QPushButton:disabled{{background:{c['bg_input']};color:{c['text_muted']};}}")
+        hl.addWidget(btn)
+
+        outer.addWidget(main_row)
+
+        # ── Строка описания + пути ───────────────────────────────────────
+        desc_row = QHBoxLayout(); desc_row.setSpacing(6)
+        desc_row.setContentsMargins(30, 0, 0, 0)
+
+        desc_lbl = QLabel(pkg["desc"])
+        desc_lbl.setStyleSheet(f"color:{c['text_muted']};font-size:11px;")
+        desc_row.addWidget(desc_lbl)
+
+        # Путь к пакету (заполняется после проверки)
+        path_lbl = QLabel("🔍 проверяю…")
+        path_lbl.setStyleSheet(f"color:{c['text_muted']};font-size:10px;")
+
+        desc_row.addWidget(path_lbl)
+        desc_row.addStretch()
+        outer.addLayout(desc_row)
+
+        # ── Разделитель ──────────────────────────────────────────────────
+        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"color:{c['border']};margin:2px 0;")
+        outer.addWidget(sep)
+
+        # Сохраняем ссылки
+        self._pkg_rows[pip_name] = {
+            "status_lbl": status_lbl,
+            "action_lbl": action_lbl,
+            "path_lbl":   path_lbl,
+            "btn":        btn,
+            "pkg":        pkg,
+            "installed":  installed,
+        }
+
+        if installed:
+            btn.clicked.connect(lambda checked, pn=pip_name: self._uninstall_by_name(pn))
+        else:
+            btn.clicked.connect(lambda checked, pn=pip_name: self._install_by_name(pn))
+
+        return row_w
+
+    def _copy_pip_cmd(self, cmd: str):
+        """Копирует pip-команду в буфер обмена и показывает подсказку."""
+        from PyQt6.QtWidgets import QApplication, QToolTip
+        from PyQt6.QtGui import QCursor
+        QApplication.clipboard().setText(cmd)
+        QToolTip.showText(QCursor.pos(), f"Скопировано: {cmd}", None)
+
+    def _open_folder(self, path: str):
+        """Открывает папку пакета в проводнике."""
+        import os
+        from pathlib import Path
+        p = Path(path)
+        if not p.exists():
+            p = p.parent
+        if sys.platform == "win32":
+            os.startfile(str(p))
+        elif sys.platform == "darwin":
+            os.system(f'open "{p}"')
+        else:
+            os.system(f'xdg-open "{p}"')
+
     def _install_missing(self):
         for pkg in PACKAGES_INFO:
-<<<<<<< HEAD
-=======
             # Пропускаем пакеты не для этой платформы
->>>>>>> 588ac9d (-)
             if pkg.get("platforms") and sys.platform not in pkg["platforms"]:
                 continue
             if not _is_package_installed(pkg["pip_name"], pkg["import_name"]):
                 self._install_by_name(pkg["pip_name"])
-"""
 
-# ══════════════════════════════════════════════════════════════════════════════
-# ИСПРАВЛЕНИЕ 5 (ГЛАВНОЕ): _on_pip_done — краш QThread
-# Причина краша: self._pip_threads.pop(pip_name, None) удаляет последнюю
-# ссылку на QThread пока он ещё работает → Python GC его уничтожает →
-# Qt вызывает QMessageLogger::fatal → SIGABRT
-#
-# Замени метод _on_pip_done на:
-# ══════════════════════════════════════════════════════════════════════════════
+    def _install_by_name(self, pip_name: str):
+        if pip_name in self._pip_threads:
+            return
+        row = self._pkg_rows.get(pip_name)
+        if not row:
+            return
+        # Блокируем кнопку сразу
+        row["btn"].setEnabled(False)
+        row["btn"].setText("⬇ Скачиваю…")
+        row["action_lbl"].setText("")
+        row["_action"] = "install"
 
-ON_PIP_DONE_PATCH = """
+        t = PipThread("install", pip_name)
+        t.done.connect(self._on_pip_done)
+        self._pip_threads[pip_name] = t
+        t.start()
+
+    def _uninstall_by_name(self, pip_name: str):
+        if pip_name in self._pip_threads:
+            return
+        row = self._pkg_rows.get(pip_name)
+        if not row:
+            return
+        row["btn"].setEnabled(False)
+        row["btn"].setText("🗑 Удаляю…")
+        row["action_lbl"].setText("")
+        row["_action"] = "uninstall"
+
+        t = PipThread("uninstall", pip_name)
+        t.done.connect(self._on_pip_done)
+        self._pip_threads[pip_name] = t
+        t.start()
+
+    # Оставляем для совместимости (вызов из _build_pkg_row старой версии)
+    def _install_package(self, pkg: dict):
+        self._install_by_name(pkg["pip_name"])
+
+    def _uninstall_package(self, pkg: dict):
+        self._uninstall_by_name(pkg["pip_name"])
+
     def _on_pip_done(self, pip_name: str, success: bool, output: str):
-<<<<<<< HEAD
-        # Не удаляем поток сразу — ждём QThread.finished чтобы избежать SIGABRT
-        t = self._pip_threads.get(pip_name)
-        if t:
-=======
         # ❌ НЕЛЬЗЯ: self._pip_threads.pop(pip_name, None)
         # Qt требует что QThread дожил до wait() перед удалением.
         # Вместо pop() — помечаем для отложенной очистки через finished-сигнал.
         t = self._pip_threads.get(pip_name)
         if t:
             # Подключаем однократный слот очистки к built-in QThread.finished
->>>>>>> 588ac9d (-)
             try:
                 t.finished.disconnect()
             except Exception:
                 pass
             t.finished.connect(lambda pn=pip_name: self._pip_threads.pop(pn, None))
-<<<<<<< HEAD
-=======
 
->>>>>>> 588ac9d (-)
         row = self._pkg_rows.get(pip_name)
         if not row:
             return
 
-        c = get_colors(self._theme)
+        c   = get_colors(self._theme)
 
         if not success:
             row["btn"].setEnabled(True)
@@ -151,6 +1453,7 @@ ON_PIP_DONE_PATCH = """
             self._show_pip_log(pip_name, success=False, output=output)
             return
 
+        # Успех — сбрасываем кеш и перепроверяем этот пакет через pip show
         _pip_show_cache.pop(pip_name, None)
         row["action_lbl"].setText("🔍 проверяю…")
         row["status_lbl"].setText("🔍")
@@ -161,148 +1464,17 @@ ON_PIP_DONE_PATCH = """
             row["path_lbl"].setText("🔍 проверяю…")
             row["path_lbl"].setStyleSheet(f"color:{c['text_muted']};font-size:10px;")
 
-        recheck_key = f"__recheck_{pip_name}"
-        t2 = PkgCheckThread([pip_name])
-        t2.pkg_checked.connect(self._on_pkg_checked)
-        t2.pkg_checked.connect(lambda pn, inst, path: self._after_recheck(pn))
-        # Очистка после завершения через finished — не через pop в _after_recheck
-        t2.finished.connect(lambda: self._pip_threads.pop(recheck_key, None))
-        t2.start()
-        self._pip_threads[recheck_key] = t2
-"""
+        # Перепроверяем только этот пакет
+        t = PkgCheckThread([pip_name])
+        t.pkg_checked.connect(self._on_pkg_checked)
+        t.pkg_checked.connect(lambda pn, inst, path: self._after_recheck(pn))
+        t.start()
+        self._pip_threads[f"__recheck_{pip_name}"] = t  # держим ссылку
 
-# ══════════════════════════════════════════════════════════════════════════════
-# ИСПРАВЛЕНИЕ 6:  _after_recheck — убрать лишний pop (он теперь в finished)
-# Замени метод _after_recheck на:
-# ══════════════════════════════════════════════════════════════════════════════
-
-AFTER_RECHECK_PATCH = """
     def _after_recheck(self, pip_name: str):
+        """После перепроверки показываем ✅ Готово."""
         row = self._pkg_rows.get(pip_name)
         if row:
             row["action_lbl"].setText("✅ Готово")
-<<<<<<< HEAD
-
-    def _show_pip_log(self, pip_name: str, success: bool, output: str):
-        """Показывает диалог с полным выводом pip."""
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QTextEdit, QPushButton, QLabel
-        c = get_colors(self._theme)
-
-        dlg = QDialog(self)
-        dlg.setWindowTitle(f"pip {'install' if not success else 'output'} — {pip_name}")
-        dlg.setMinimumSize(560, 400)
-        dlg.setStyleSheet(f"QDialog{{background:{c['bg_panel']};color:{c['text']};}}")
-
-        lay = QVBoxLayout(dlg)
-        lay.setContentsMargins(16, 16, 16, 16)
-        lay.setSpacing(10)
-
-        status_text = "❌ Ошибка установки" if not success else "✅ Успешно"
-        lbl = QLabel(f"{status_text} — {pip_name}")
-        lbl.setStyleSheet(
-            f"color:{'#f44336' if not success else '#4caf50'};"
-            "font-size:13px;font-weight:600;")
-        lay.addWidget(lbl)
-
-        hint = QLabel("Скопируй и запусти команду вручную в терминале:")
-        hint.setStyleSheet(f"color:{c['text_muted']};font-size:11px;")
-        lay.addWidget(hint)
-
-        cmd_lbl = QLabel(f"pip install {pip_name}")
-        cmd_lbl.setStyleSheet(
-            f"color:{c['accent_blue']};font-size:12px;font-weight:600;"
-            f"background:{c['bg_input']};border-radius:5px;padding:6px 10px;")
-        cmd_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        lay.addWidget(cmd_lbl)
-
-        log = QTextEdit()
-        log.setReadOnly(True)
-        log.setPlainText(output or "(нет вывода)")
-        log.setStyleSheet(
-            f"QTextEdit{{background:#0d1117;color:#e6edf3;"
-            f"border:1px solid {c['border']};border-radius:6px;"
-            f"font-family:Consolas,monospace;font-size:11px;padding:8px;}}")
-        lay.addWidget(log, stretch=1)
-
-        from PyQt6.QtWidgets import QHBoxLayout
-        btn_row = QHBoxLayout()
-        btn_copy = QPushButton("📋  Скопировать лог")
-        btn_copy.setStyleSheet(
-            f"QPushButton{{background:{c['bg_input']};color:{c['text']};"
-            f"border:1px solid {c['border']};border-radius:6px;padding:6px 14px;}}"
-            f"QPushButton:hover{{background:{c['bg_hover']};}}")
-        btn_copy.clicked.connect(
-            lambda: __import__("PyQt6.QtWidgets", fromlist=["QApplication"])
-            .QApplication.clipboard().setText(output))
-        btn_row.addWidget(btn_copy)
-        btn_row.addStretch()
-        btn_close = QPushButton("Закрыть")
-        btn_close.setStyleSheet(
-            f"QPushButton{{background:{c['accent_blue']};color:#fff;"
-            f"border:none;border-radius:6px;padding:6px 18px;}}"
-            f"QPushButton:hover{{background:{c['accent_blue']}cc;}}")
-        btn_close.clicked.connect(dlg.accept)
-        btn_row.addWidget(btn_close)
-        lay.addLayout(btn_row)
-
-        dlg.exec()
-
-    # ── Сохранение ────────────────────────────────────────────────────────
-
-    def _save(self):
-        provider_id = self.combo_provider.currentData()
-        src_keys = ["mic", "system", "both"]
-
-        mic_device_index = self.combo_mic_device.currentData()
-
-        self.settings.update({
-            "audio_source": src_keys[self.combo_source.currentIndex()],
-            "mic_device_index": mic_device_index,
-            "whisper_model": self.combo_whisper_model.currentText(),
-            "language": self.combo_lang.currentData(),
-            "ai_provider": provider_id,
-            "ai_api_key": self.edit_api_key.text().strip(),
-            "ai_model": self._get_current_model(),
-            "ai_custom_url": self.edit_custom_url.text().strip(),
-            "ai_custom_model": self.edit_custom_model.text().strip(),
-            "theme": self._theme,
-        })
-        save_settings(self.settings)
-
-        # ✅ НЕТ перезапуска приложения — только инфо
-        c = get_colors(self._theme)
-        msg = QMessageBox(self)
-        msg.setWindowTitle("Настройки сохранены")
-        msg.setIcon(QMessageBox.Icon.Information)
-        msg.setText("✅ Настройки успешно сохранены!")
-        msg.setStyleSheet(f"QMessageBox {{ background: {c['bg_card'] if 'bg_card' in c else c['bg_panel']}; color: {c['text']}; }}")
-        msg.exec()
-
-    def get_settings(self) -> dict:
-        return load_settings()
-
-    # ── Стили ─────────────────────────────────────────────────────────────
-
-    def _secondary_btn_style(self, c: dict) -> str:
-        return f"""
-            QPushButton {{
-                background: {c['bg_input']}; color: {c['text']};
-                border: 1px solid {c['border']}; border-radius: 6px;
-                padding: 6px 16px; font-size: 12px;
-            }}
-            QPushButton:hover {{ background: {c['bg_hover']}; color: {c['text']}; }}
-        """
-
-    def _link_btn_style(self, c: dict) -> str:
-        return f"""
-            QPushButton {{
-                background: transparent; color: {c['accent_blue']};
-                border: 1px solid {c['accent_blue']}; border-radius: 6px;
-                padding: 6px 14px; font-size: 12px;
-            }}
-            QPushButton:hover {{ background: {c['bg_selected']}; }}
-        """
-=======
         # pop теперь делается в t2.finished.connect выше — здесь не нужен
 """
->>>>>>> 588ac9d (-)
