@@ -1,30 +1,93 @@
 """
-ПАТЧ для core/tesseract_langs.py
-Исправляет:
-  1. find_tesseract_cmd — добавить пути для Mac (Homebrew)
-  2. TesseractInstallerThread — кросс-платформенная установка
-  3. TesseractTab — правильные инструкции для Mac/Linux
+Управление Tesseract OCR и языковыми пакетами.
 
-КАК ПРИМЕНИТЬ:
-  Замени в tesseract_langs.py указанные блоки на исправленные версии.
+Новые возможности:
+  - Скачивание и установка Tesseract прямо из приложения
+  - Удаление отдельных языковых пакетов
+  - Увеличенный интерфейс с вкладками
+
+Языки ищутся в:
+  1. Рядом с tesseract.exe (динамически)
+  2. ~/.lesson_recorder/tessdata/
+  3. Стандартные пути Windows
 """
+import os
+import sys
+import shutil
+import tempfile
+import subprocess
+from pathlib import Path
 
-# ══════════════════════════════════════════════════════════════════════════════
-# ИСПРАВЛЕНИЕ 1: _find_tesseract_cmd_uncached — добавить Mac/Linux пути
-# Замени всю функцию _find_tesseract_cmd_uncached на:
-# ══════════════════════════════════════════════════════════════════════════════
+from PyQt6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QProgressBar, QScrollArea, QWidget, QGridLayout, QCheckBox,
+    QFrame, QTabWidget,
+)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
-FIND_TESSERACT_PATCH = """
+USER_TESSDATA     = Path.home() / ".lesson_recorder" / "tessdata"
+TESSDATA_BASE_URL = "https://github.com/tesseract-ocr/tessdata/raw/main"
+_SKIP_STEMS       = {"snum", "pdf", "configs", "tessconfigs", "osd", ""}
+
+TESSERACT_INSTALLER_URL = (
+    "https://digi.bib.uni-mannheim.de/tesseract/"
+    "tesseract-ocr-w64-setup-5.4.0.20240606.exe"
+)
+TESSERACT_INSTALLER_VERSION = "5.4.0"
+
+LANG_NAMES: dict[str, str] = {
+    "rus": "Русский",    "eng": "English",       "deu": "Deutsch",
+    "fra": "Français",   "spa": "Español",        "ita": "Italiano",
+    "por": "Português",  "pol": "Polski",          "nld": "Nederlands",
+    "swe": "Svenska",    "nor": "Norsk",           "dan": "Dansk",
+    "fin": "Suomi",      "tur": "Türkçe",          "ukr": "Українська",
+    "bel": "Беларуская", "bul": "Български",       "ces": "Čeština",
+    "slk": "Slovenčina", "hun": "Magyar",           "ron": "Română",
+    "hrv": "Hrvatski",   "srp": "Српски",           "ara": "العربية",
+    "heb": "עברית",      "jpn": "日本語",           "chi_sim": "中文简体",
+    "chi_tra": "中文繁體","kor": "한국어",            "hin": "हिन्दी",
+    "tha": "ภาษาไทย",    "vie": "Tiếng Việt",      "ind": "Bahasa Indonesia",
+    "kat": "ქართული",    "ell": "Ελληνικά",        "lav": "Latviešu",
+    "lit": "Lietuvių",   "est": "Eesti",           "equ": "Формулы/Math",
+}
+DOWNLOADABLE_LANGS = list(LANG_NAMES.keys())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Утилиты поиска
+# ─────────────────────────────────────────────────────────────────────────────
+
+_tesseract_cmd_cache: str | None | bool = False   # False = не проверялось
+
+
+def find_tesseract_cmd() -> str | None:
+    """
+    Ищет tesseract.exe быстрыми методами (без rglob по всему диску).
+    Результат кешируется на время сессии.
+    """
+    global _tesseract_cmd_cache
+    if _tesseract_cmd_cache is not False:
+        return _tesseract_cmd_cache   # type: ignore[return-value]
+
+    result = _find_tesseract_cmd_uncached()
+    _tesseract_cmd_cache = result
+    return result
+
+
 def _find_tesseract_cmd_uncached() -> str | None:
     # 1. Фиксированные пути Windows — мгновенно
     if sys.platform == "win32":
         for p in [
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
             r"C:\Program Files\Tesseract-OCR\tesseract.exe",
             r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
             r"C:\Tesseract-OCR\tesseract.exe",
             r"C:\Tesseract\tesseract.exe",
             r"C:\tools\Tesseract-OCR\tesseract.exe",
+<<<<<<< HEAD
 =======
             r"C:\\Program Files\\Tesseract-OCR\\tesseract.exe",
             r"C:\\Program Files (x86)\\Tesseract-OCR\\tesseract.exe",
@@ -32,10 +95,13 @@ def _find_tesseract_cmd_uncached() -> str | None:
             r"C:\\Tesseract\\tesseract.exe",
             r"C:\\tools\\Tesseract-OCR\\tesseract.exe",
 >>>>>>> 23bcb08 (fix: QThread crash on mac, hide PyAudioWPatch on non-windows, cross-platform Tesseract installer)
+=======
+>>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
         ]:
             if Path(p).exists():
                 return p
 
+<<<<<<< HEAD
 <<<<<<< HEAD
     # 2. Homebrew macOS (до PATH — шебанги могут не обновить PATH)
     if sys.platform == "darwin":
@@ -49,21 +115,33 @@ def _find_tesseract_cmd_uncached() -> str | None:
             "/opt/homebrew/bin/tesseract",    # Apple Silicon
             "/usr/local/bin/tesseract",        # Intel Mac
 >>>>>>> 23bcb08 (fix: QThread crash on mac, hide PyAudioWPatch on non-windows, cross-platform Tesseract installer)
+=======
+    # 2. Homebrew macOS (до PATH — шебанги могут не обновить PATH)
+    if sys.platform == "darwin":
+        for p in [
+            "/opt/homebrew/bin/tesseract",   # Apple Silicon
+            "/usr/local/bin/tesseract",       # Intel Mac
+>>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
         ]:
             if Path(p).exists():
                 return p
 
 <<<<<<< HEAD
+<<<<<<< HEAD
     # 3. PATH — мгновенно (все платформы)
 =======
     # 3. PATH — мгновенно (работает на всех платформах)
 >>>>>>> 23bcb08 (fix: QThread crash on mac, hide PyAudioWPatch on non-windows, cross-platform Tesseract installer)
+=======
+    # 3. PATH — мгновенно (все платформы)
+>>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
     found = shutil.which("tesseract")
     if found:
         return found
 
     # 4. Linux стандартные пути
     if sys.platform.startswith("linux"):
+<<<<<<< HEAD
 <<<<<<< HEAD
         for p in ["/usr/bin/tesseract", "/usr/local/bin/tesseract"]:
             if Path(p).exists():
@@ -92,29 +170,34 @@ def _find_tesseract_cmd_uncached() -> str | None:
             "/usr/bin/tesseract",
             "/usr/local/bin/tesseract",
         ]:
+=======
+        for p in ["/usr/bin/tesseract", "/usr/local/bin/tesseract"]:
+>>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
             if Path(p).exists():
                 return p
 >>>>>>> 23bcb08 (fix: QThread crash on mac, hide PyAudioWPatch on non-windows, cross-platform Tesseract installer)
 
-    # 5. Реестр Windows
-    if sys.platform == "win32":
-        try:
-            import winreg
-            for hive in [winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER]:
-                for sub in [r"SOFTWARE\\Tesseract-OCR",
-                            r"SOFTWARE\\WOW6432Node\\Tesseract-OCR"]:
-                    try:
-                        with winreg.OpenKey(hive, sub) as key:
-                            install_dir, _ = winreg.QueryValueEx(key, "InstallDir")
-                            exe = Path(install_dir) / "tesseract.exe"
-                            if exe.exists():
-                                return str(exe)
-                    except (FileNotFoundError, OSError):
-                        pass
-        except ImportError:
-            pass
+    # 5. Реестр Windows — быстро
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg
+        for hive in [winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER]:
+            for sub in [r"SOFTWARE\Tesseract-OCR",
+                        r"SOFTWARE\WOW6432Node\Tesseract-OCR"]:
+                try:
+                    with winreg.OpenKey(hive, sub) as key:
+                        install_dir, _ = winreg.QueryValueEx(key, "InstallDir")
+                        exe = Path(install_dir) / "tesseract.exe"
+                        if exe.exists():
+                            return str(exe)
+                except (FileNotFoundError, OSError):
+                    pass
+    except ImportError:
+        pass
 
-    # 6. where/which как последний шанс
+    # 4. Команда where (Windows) / which (Unix) — быстро
+    import subprocess
     try:
         r = subprocess.run(
             ["where", "tesseract"] if sys.platform == "win32" else ["which", "tesseract"],
@@ -127,19 +210,219 @@ def _find_tesseract_cmd_uncached() -> str | None:
     except Exception:
         pass
 
+    # НЕ используем rglob — это сканирование всего диска (десятки секунд)
     return None
-"""
 
-# ══════════════════════════════════════════════════════════════════════════════
-# ИСПРАВЛЕНИЕ 2: TesseractInstallerThread — кросс-платформенный
-# Замени весь класс TesseractInstallerThread на:
-# ══════════════════════════════════════════════════════════════════════════════
 
-INSTALLER_THREAD_PATCH = """
+def get_all_tessdata_dirs() -> list[Path]:
+    dirs: list[Path] = []
+    cmd = find_tesseract_cmd()
+    if cmd:
+        d = Path(cmd).parent / "tessdata"
+        if d.exists():
+            dirs.append(d)
+    if USER_TESSDATA.exists():
+        dirs.append(USER_TESSDATA)
+    for p in [r"C:\Program Files\Tesseract-OCR\tessdata",
+              r"C:\Program Files (x86)\Tesseract-OCR\tessdata",
+              r"C:\Tesseract-OCR\tessdata"]:
+        pp = Path(p)
+        if pp.exists() and pp not in dirs:
+            dirs.append(pp)
+    return dirs
+
+
+def setup_tesseract() -> bool:
+    cmd = find_tesseract_cmd()
+    if not cmd:
+        return False
+    try:
+        import pytesseract
+        pytesseract.pytesseract.tesseract_cmd = cmd
+        if USER_TESSDATA.exists() and any(USER_TESSDATA.glob("*.traineddata")):
+            os.environ["TESSDATA_PREFIX"] = str(USER_TESSDATA)
+        else:
+            exe_td = Path(cmd).parent / "tessdata"
+            if exe_td.exists():
+                os.environ["TESSDATA_PREFIX"] = str(exe_td)
+        return True
+    except ImportError:
+        return False
+
+
+def ensure_user_tessdata() -> Path:
+    USER_TESSDATA.mkdir(parents=True, exist_ok=True)
+    return USER_TESSDATA
+
+
+def get_lang_file(code: str, tessdata_dir: Path) -> Path:
+    return tessdata_dir / f"{code}.traineddata"
+
+
+def is_lang_available(code: str) -> bool:
+    return any(get_lang_file(code, d).exists() for d in get_all_tessdata_dirs())
+
+
+def get_available_langs() -> list[str]:
+    langs: set[str] = set()
+    for d in get_all_tessdata_dirs():
+        for f in d.glob("*.traineddata"):
+            if f.stem not in _SKIP_STEMS:
+                langs.add(f.stem)
+    return sorted(langs)
+
+
+def delete_lang(code: str) -> bool:
+    """Удаляет языковой пакет из пользовательской tessdata папки."""
+    path = get_lang_file(code, USER_TESSDATA)
+    if path.exists():
+        try:
+            path.unlink()
+            return True
+        except OSError:
+            return False
+    return False
+
+
+def mirror_system_langs_to_user() -> int:
+    ensure_user_tessdata()
+    count = 0
+    for d in get_all_tessdata_dirs():
+        if d == USER_TESSDATA:
+            continue
+        for f in d.glob("*.traineddata"):
+            dest = USER_TESSDATA / f.name
+            if not dest.exists():
+                try:
+                    shutil.copy2(f, dest)
+                    count += 1
+                except OSError:
+                    pass
+    return count
+
+
+def prepare_tessdata_for_ocr(lang_codes: list[str]) -> tuple[str, str]:
+    ensure_user_tessdata()
+    mirror_system_langs_to_user()
+
+    available = [c for c in lang_codes if get_lang_file(c, USER_TESSDATA).exists()]
+    if not available:
+        for code in lang_codes:
+            for d in get_all_tessdata_dirs():
+                if get_lang_file(code, d).exists():
+                    available.append(code)
+                    break
+
+    if not available:
+        for d in get_all_tessdata_dirs():
+            if get_lang_file("eng", d).exists():
+                os.environ["TESSDATA_PREFIX"] = str(d)
+                return "eng", str(d)
+        return "eng", ""
+
+    tessdata_dir = str(USER_TESSDATA)
+    if not any(get_lang_file(c, USER_TESSDATA).exists() for c in available):
+        for d in get_all_tessdata_dirs():
+            if any(get_lang_file(c, d).exists() for c in available):
+                tessdata_dir = str(d)
+                break
+
+    os.environ["TESSDATA_PREFIX"] = tessdata_dir
+    return "+".join(available), tessdata_dir
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Общие стили
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _btn_style(bg: str, fg: str = "#fff") -> str:
+    return (
+        f"QPushButton{{background:{bg};color:{fg};border:none;"
+        f"border-radius:8px;padding:9px 24px;font-size:13px;font-weight:600;}}"
+        f"QPushButton:hover{{background:{bg}cc;}}"
+        f"QPushButton:disabled{{background:#252525;color:#555;}}"
+    )
+
+_BTN_OUTLINE = (
+    "QPushButton{background:transparent;color:#888;border:1px solid #3a3a3a;"
+    "border-radius:8px;padding:9px 24px;font-size:13px;}"
+    "QPushButton:hover{background:#252525;color:#ccc;}"
+)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Потоки
+# ─────────────────────────────────────────────────────────────────────────────
+
+class LangDownloadThread(QThread):
+    lang_started  = pyqtSignal(str)
+    lang_progress = pyqtSignal(str, int)
+    lang_done     = pyqtSignal(str)
+    lang_error    = pyqtSignal(str, str)
+    all_done      = pyqtSignal()
+
+    def __init__(self, lang_codes: list[str]):
+        super().__init__()
+        self.lang_codes = lang_codes
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        import requests
+        ensure_user_tessdata()
+        for code in self.lang_codes:
+            if self._cancelled:
+                break
+            dest = get_lang_file(code, USER_TESSDATA)
+            if dest.exists():
+                self.lang_done.emit(code)
+                continue
+            self.lang_started.emit(code)
+            for d in get_all_tessdata_dirs():
+                src = get_lang_file(code, d)
+                if src.exists():
+                    try:
+                        shutil.copy2(src, dest)
+                        self.lang_done.emit(code)
+                    except OSError as e:
+                        self.lang_error.emit(code, str(e))
+                    break
+            else:
+                url = f"{TESSDATA_BASE_URL}/{code}.traineddata"
+                tmp = dest.with_suffix(".tmp")
+                try:
+                    r = requests.get(url, stream=True, timeout=90)
+                    r.raise_for_status()
+                    total = int(r.headers.get("content-length", 0))
+                    downloaded = 0
+                    with open(tmp, "wb") as f:
+                        for chunk in r.iter_content(chunk_size=65536):
+                            if self._cancelled:
+                                break
+                            if chunk:
+                                f.write(chunk)
+                                downloaded += len(chunk)
+                                if total:
+                                    self.lang_progress.emit(
+                                        code, int(downloaded / total * 100)
+                                    )
+                    if self._cancelled:
+                        tmp.unlink(missing_ok=True)
+                        break
+                    tmp.rename(dest)
+                    self.lang_done.emit(code)
+                except Exception as e:
+                    tmp.unlink(missing_ok=True)
+                    self.lang_error.emit(code, str(e))
+        self.all_done.emit()
+
+
 class TesseractInstallerThread(QThread):
     progress = pyqtSignal(int)
     status   = pyqtSignal(str)
-    finished = pyqtSignal(str)   # путь к установщику (Windows) или "" (Mac/Linux)
+    finished = pyqtSignal(str)
     error    = pyqtSignal(str)
 
     def __init__(self):
@@ -159,6 +442,7 @@ class TesseractInstallerThread(QThread):
 
     def _install_mac(self):
 <<<<<<< HEAD
+<<<<<<< HEAD
         brew = shutil.which("brew")
         if not brew:
             self.error.emit(
@@ -175,11 +459,20 @@ class TesseractInstallerThread(QThread):
                 "Установи Homebrew, затем выполни в терминале:\\n"
                 "  brew install tesseract"
 >>>>>>> 23bcb08 (fix: QThread crash on mac, hide PyAudioWPatch on non-windows, cross-platform Tesseract installer)
+=======
+        brew = shutil.which("brew")
+        if not brew:
+            self.error.emit(
+                "Homebrew не найден.\n\n"
+                "Установи Homebrew: https://brew.sh\n"
+                "Затем выполни: brew install tesseract"
+>>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
             )
             return
         self.status.emit("Устанавливаю Tesseract через Homebrew…")
         self.progress.emit(10)
         try:
+<<<<<<< HEAD
 <<<<<<< HEAD
             import subprocess as _sp
             proc = _sp.Popen([brew, "install", "tesseract"],
@@ -198,12 +491,21 @@ class TesseractInstallerThread(QThread):
                     proc.kill()
                     return
 >>>>>>> 23bcb08 (fix: QThread crash on mac, hide PyAudioWPatch on non-windows, cross-platform Tesseract installer)
+=======
+            import subprocess as _sp
+            proc = _sp.Popen([brew, "install", "tesseract"],
+                             stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True)
+            for line in proc.stdout:
+                if self._cancelled:
+                    proc.kill(); return
+>>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
                 self.status.emit(line.strip()[:80])
             proc.wait()
             if proc.returncode == 0:
                 self.progress.emit(100)
                 self.finished.emit("")
             else:
+<<<<<<< HEAD
 <<<<<<< HEAD
                 self.error.emit(f"Homebrew вернул код {proc.returncode}\nПопробуй: brew install tesseract")
 =======
@@ -212,19 +514,26 @@ class TesseractInstallerThread(QThread):
                     "Попробуй вручную: brew install tesseract"
                 )
 >>>>>>> 23bcb08 (fix: QThread crash on mac, hide PyAudioWPatch on non-windows, cross-platform Tesseract installer)
+=======
+                self.error.emit(f"Homebrew вернул код {proc.returncode}\nПопробуй: brew install tesseract")
+>>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
         except Exception as e:
             self.error.emit(str(e))
 
     def _install_linux(self):
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
         \"\"\"Устанавливает Tesseract через системный менеджер пакетов.\"\"\"
         import shutil
 >>>>>>> 23bcb08 (fix: QThread crash on mac, hide PyAudioWPatch on non-windows, cross-platform Tesseract installer)
+=======
+>>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
         pkg_managers = [
             (shutil.which("apt-get"), ["sudo", "apt-get", "install", "-y", "tesseract-ocr"]),
             (shutil.which("dnf"),     ["sudo", "dnf", "install", "-y", "tesseract"]),
             (shutil.which("pacman"),  ["sudo", "pacman", "-S", "--noconfirm", "tesseract"]),
+<<<<<<< HEAD
 <<<<<<< HEAD
         ]
         import subprocess as _sp
@@ -232,10 +541,15 @@ class TesseractInstallerThread(QThread):
             (shutil.which("zypper"),  ["sudo", "zypper", "install", "-y", "tesseract-ocr"]),
         ]
 >>>>>>> 23bcb08 (fix: QThread crash on mac, hide PyAudioWPatch on non-windows, cross-platform Tesseract installer)
+=======
+        ]
+        import subprocess as _sp
+>>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
         for mgr, cmd in pkg_managers:
             if mgr:
                 self.status.emit(f"Устанавливаю через {Path(mgr).name}…")
                 try:
+<<<<<<< HEAD
 <<<<<<< HEAD
                     proc = _sp.Popen(cmd, stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True)
                     for line in proc.stdout:
@@ -249,21 +563,28 @@ class TesseractInstallerThread(QThread):
                     proc = subprocess.Popen(
                         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
                     )
+=======
+                    proc = _sp.Popen(cmd, stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True)
+>>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
                     for line in proc.stdout:
                         if self._cancelled:
-                            proc.kill()
-                            return
+                            proc.kill(); return
                         self.status.emit(line.strip()[:80])
                     proc.wait()
                     if proc.returncode == 0:
+<<<<<<< HEAD
                         self.progress.emit(100)
                         self.finished.emit("")
 >>>>>>> 23bcb08 (fix: QThread crash on mac, hide PyAudioWPatch on non-windows, cross-platform Tesseract installer)
+=======
+                        self.progress.emit(100); self.finished.emit("")
+>>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
                     else:
                         self.error.emit(f"Менеджер пакетов вернул код {proc.returncode}")
                 except Exception as e:
                     self.error.emit(str(e))
                 return
+<<<<<<< HEAD
 <<<<<<< HEAD
         self.error.emit("Не удалось определить менеджер пакетов.\nsudo apt install tesseract-ocr")
 
@@ -277,6 +598,11 @@ class TesseractInstallerThread(QThread):
     def _install_windows(self):
         \"\"\"Скачивает и запускает установщик для Windows.\"\"\"
 >>>>>>> 23bcb08 (fix: QThread crash on mac, hide PyAudioWPatch on non-windows, cross-platform Tesseract installer)
+=======
+        self.error.emit("Не удалось определить менеджер пакетов.\nsudo apt install tesseract-ocr")
+
+    def _install_windows(self):
+>>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
         import requests
         try:
             self.status.emit("Подключаюсь к серверу…")
@@ -302,58 +628,129 @@ class TesseractInstallerThread(QThread):
             self.finished.emit(str(dest))
         except Exception as e:
             self.error.emit(str(e))
-"""
 
-# ══════════════════════════════════════════════════════════════════════════════
-# ИСПРАВЛЕНИЕ 3: TesseractTab._build — кросс-платформенный текст
-# Замени блок с desc = QLabel(...) (описание) и note = QLabel(...) (подсказка),
-# а также dl_btn текст. Найди в _build после добавления карточки статуса:
-# ══════════════════════════════════════════════════════════════════════════════
 
-TESSERACT_TAB_BUILD_PATCH = """
-        # Описание — зависит от платформы
-        if sys.platform == "darwin":
-            desc_text = (
-                "<b>Tesseract OCR</b> — бесплатный движок распознавания текста (Google).<br>"
-                "Без него функция «Фото → Текст» не работает.<br><br>"
-                "Будет установлен через <b>Homebrew</b> командой:<br>"
-                "<code style='background:#1a1a1a;padding:2px 6px;border-radius:4px;'>"
-                "brew install tesseract</code>"
-            )
-            btn_text  = "🍺  Установить через Homebrew"
-            note_text = "💡 Homebrew установит tesseract и все зависимости автоматически."
-        elif sys.platform.startswith("linux"):
-            desc_text = (
-                "<b>Tesseract OCR</b> — бесплатный движок распознавания текста (Google).<br>"
-                "Без него функция «Фото → Текст» не работает.<br><br>"
-                "Будет установлен через системный менеджер пакетов<br>"
-                "(apt, dnf, pacman — определяется автоматически)."
-            )
-            btn_text  = "📦  Установить Tesseract"
-            note_text = "💡 Потребуется пароль sudo для установки системного пакета."
+# ─────────────────────────────────────────────────────────────────────────────
+# Вкладка: Tesseract
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TesseractTab(QWidget):
+    installed = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._thread: TesseractInstallerThread | None = None
+        self._build()
+
+    def _build(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(20)
+        layout.setContentsMargins(32, 32, 32, 32)
+
+        # Статус-карточка
+        cmd = find_tesseract_cmd()
+        if cmd:
+            bg, border, icon = "#0a2010", "#4caf5044", "✅"
+            msg = f"Tesseract найден:\n{cmd}"
+            msg_color = "#4caf50"
         else:
-            desc_text = (
-                "<b>Tesseract OCR</b> — бесплатный движок распознавания текста (Google).<br>"
-                "Без него функция «Фото → Текст» не работает.<br><br>"
-                f"Будет скачан установщик <b>v{TESSERACT_INSTALLER_VERSION}</b> (~48 МБ) "
-                "с официального репозитория <b>UB-Mannheim</b>."
-            )
-            btn_text  = "⬇  Скачать и установить Tesseract"
-            note_text = (
-                "💡 При установке рекомендуется отметить <b>«Additional language data»</b> — "
-                "тогда языки скачивать отдельно не нужно."
-            )
-"""
+            bg, border, icon = "#1e1400", "#ffb30044", "⚠️"
+            msg = "Tesseract не найден на этом компьютере"
+            msg_color = "#ffb300"
 
-# ══════════════════════════════════════════════════════════════════════════════
-# ИСПРАВЛЕНИЕ 4: TesseractTab._on_downloaded — Mac не запускает .exe
-# Замени метод _on_downloaded на:
-# ══════════════════════════════════════════════════════════════════════════════
+        card = QWidget()
+        card.setStyleSheet(
+            f"background:{bg}; border:1px solid {border}; border-radius:12px;"
+        )
+        card_row = QHBoxLayout(card)
+        card_row.setContentsMargins(24, 20, 24, 20)
+        card_row.setSpacing(16)
+        ic = QLabel(icon)
+        ic.setStyleSheet("font-size:32px;")
+        card_row.addWidget(ic)
+        msg_lbl = QLabel(msg)
+        msg_lbl.setStyleSheet(f"color:{msg_color}; font-size:14px;")
+        msg_lbl.setWordWrap(True)
+        card_row.addWidget(msg_lbl, stretch=1)
+        layout.addWidget(card)
 
-ON_DOWNLOADED_PATCH = """
+        # Описание
+        desc = QLabel(
+            "<b>Tesseract OCR</b> — бесплатный движок распознавания текста (Google).<br>"
+            "Без него функция «Фото → Текст» не работает.<br><br>"
+            f"Будет скачан установщик <b>v{TESSERACT_INSTALLER_VERSION}</b> (~48 МБ) "
+            "с официального репозитория <b>UB-Mannheim</b>."
+        )
+        desc.setStyleSheet("color:#aaa; font-size:13px;")
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+
+        # Прогресс
+        self.pbar = QProgressBar()
+        self.pbar.setRange(0, 100)
+        self.pbar.setFixedHeight(22)
+        self.pbar.setVisible(False)
+        self.pbar.setFormat("%p%")
+        self.pbar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.pbar.setStyleSheet(
+            "QProgressBar{border:none;background:#21262d;border-radius:11px;"
+            "color:#e6edf3;font-size:11px;font-weight:600;}"
+            "QProgressBar::chunk{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            "stop:0 #58a6ff,stop:1 #bc8cff);border-radius:11px;}"
+        )
+        layout.addWidget(self.pbar)
+
+        self.status_lbl = QLabel("")
+        self.status_lbl.setStyleSheet("color:#888; font-size:12px;")
+        self.status_lbl.setWordWrap(True)
+        layout.addWidget(self.status_lbl)
+
+        # Кнопки
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(12)
+        self.dl_btn = QPushButton("⬇  Скачать и установить Tesseract")
+        self.dl_btn.setFixedHeight(46)
+        self.dl_btn.setStyleSheet(_btn_style("#2a5298"))
+        self.dl_btn.clicked.connect(self._start_download)
+        btn_row.addWidget(self.dl_btn)
+
+        self.cancel_btn = QPushButton("Отмена")
+        self.cancel_btn.setFixedHeight(46)
+        self.cancel_btn.setStyleSheet(_BTN_OUTLINE)
+        self.cancel_btn.setVisible(False)
+        self.cancel_btn.clicked.connect(self._cancel)
+        btn_row.addWidget(self.cancel_btn)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        note = QLabel(
+            "💡 При установке рекомендуется отметить <b>«Additional language data»</b> — "
+            "тогда языки скачивать отдельно не нужно."
+        )
+        note.setStyleSheet(
+            "color:#888; font-size:12px; background:#1c1c1c;"
+            " border-radius:8px; padding:10px 14px;"
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        layout.addStretch()
+
+    def _start_download(self):
+        self.dl_btn.setEnabled(False)
+        self.cancel_btn.setVisible(True)
+        self.pbar.setVisible(True)
+        self.pbar.setValue(0)
+        self._thread = TesseractInstallerThread()
+        self._thread.progress.connect(self.pbar.setValue)
+        self._thread.status.connect(self.status_lbl.setText)
+        self._thread.finished.connect(self._on_downloaded)
+        self._thread.error.connect(self._on_error)
+        self._thread.start()
+
     def _on_downloaded(self, exe_path: str):
         self.pbar.setValue(100)
         self.cancel_btn.setVisible(False)
+<<<<<<< HEAD
 <<<<<<< HEAD
         global _tesseract_cmd_cache
         _tesseract_cmd_cache = False
@@ -366,34 +763,44 @@ ON_DOWNLOADED_PATCH = """
         # Windows — запускаем скачанный .exe
 =======
 
+=======
+        global _tesseract_cmd_cache
+        _tesseract_cmd_cache = False
+>>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
         if not exe_path:
-            # Mac/Linux — установка уже завершена внутри потока
-            self.status_lbl.setText(
-                "✅ Tesseract установлен! Перезапустите приложение."
-            )
-            global _tesseract_cmd_cache
-            _tesseract_cmd_cache = False
+            # Mac/Linux — установка завершена внутри потока
+            self.status_lbl.setText("✅ Tesseract установлен! Перезапустите приложение.")
             self.installed.emit()
             self.dl_btn.setEnabled(True)
             return
+<<<<<<< HEAD
 
         # Windows — запускаем скачанный .exe установщик
 >>>>>>> 23bcb08 (fix: QThread crash on mac, hide PyAudioWPatch on non-windows, cross-platform Tesseract installer)
+=======
+        # Windows — запускаем скачанный .exe
+>>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
         try:
             subprocess.Popen([exe_path], shell=True)
             self.status_lbl.setText(
                 "✅ Установщик запущен. После установки перезапусти приложение."
             )
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
             global _tesseract_cmd_cache
             _tesseract_cmd_cache = False
 >>>>>>> 23bcb08 (fix: QThread crash on mac, hide PyAudioWPatch on non-windows, cross-platform Tesseract installer)
+=======
+>>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
             self.installed.emit()
         except Exception as e:
             self.status_lbl.setText(f"❌ Не удалось запустить: {e}")
         self.dl_btn.setEnabled(True)
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
 
     def _on_error(self, msg: str):
         self.status_lbl.setText(f"❌ {msg}")
@@ -789,7 +1196,11 @@ class LangInstallDialog(QDialog):
 
     def closeEvent(self, event):
         self._langs_tab.closeEvent(event)
+<<<<<<< HEAD
         super().closeEvent(event)
 =======
 """
 >>>>>>> 23bcb08 (fix: QThread crash on mac, hide PyAudioWPatch on non-windows, cross-platform Tesseract installer)
+=======
+        super().closeEvent(event)
+>>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
