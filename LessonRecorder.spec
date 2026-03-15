@@ -32,6 +32,12 @@ ICON = _icon()
 # ── Дополнительные данные (скопировать рядом с бинарником) ────────────────
 datas = []
 
+# ОБЯЗАТЕЛЬНО: воркер транскрипции — запускается внешним Python
+# Путь назначения "core" → попадёт в Contents/Frameworks/core/ на macOS
+worker = BASE_DIR / "core" / "transcribe_worker.py"
+if worker.exists():
+    datas.append((str(worker), "core"))
+
 # Иконки
 for name in ["app_icon.ico", "app_icon.icns", "app_icon.png"]:
     p = BASE_DIR / name
