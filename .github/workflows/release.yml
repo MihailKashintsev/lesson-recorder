@@ -20,12 +20,12 @@ jobs:
             arch: x64
             artifact_ext: exe
 
-          - os: macos-14       # Apple Silicon (M1/M2)
+          - os: macos-15       # Apple Silicon (M1/M2/M3/M4)
             platform: macos
             arch: arm64
             artifact_ext: dmg
 
-          - os: macos-13       # Intel Mac
+          - os: macos-15-intel # Intel Mac
             platform: macos
             arch: x64
             artifact_ext: dmg
@@ -134,21 +134,44 @@ jobs:
             if ($src.FullName -ne $dst) { Rename-Item $src.FullName $name -Force }
           }
 
-      # ═══ macOS: .dmg ══════════════════════════════════════════════════
-      - name: Build macOS DMG
+      # ═══ macOS: освобождаем место на диске ══════════════════════════
+      - name: Free disk space (macOS)
+        if: matrix.platform == 'macos'
+        run: |
+          echo "=== Disk before cleanup ==="
+          df -h /
+          # Агрессивная очистка — освобождаем 10-20 ГБ
+          sudo rm -rf /Applications/Xcode_*.app/Contents/Developer/Platforms/AppleTVOS.platform || true
+          sudo rm -rf /Applications/Xcode_*.app/Contents/Developer/Platforms/WatchOS.platform || true
+          sudo rm -rf /Applications/Xcode_*.app/Contents/Developer/Platforms/WatchSimulator.platform || true
+          sudo rm -rf /Applications/Xcode_*.app/Contents/Developer/Platforms/AppleTVSimulator.platform || true
+          sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes || true
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /usr/local/share/chromium || true
+          sudo rm -rf ~/Library/Caches/Homebrew || true
+          brew cleanup --prune=all 2>/dev/null || true
+          echo "=== Disk after cleanup ==="
+          df -h /
+
+      # ═══ macOS: .zip вместо DMG (нет проблем с диском) ═══════════════
+      - name: Build macOS ZIP
         if: matrix.platform == 'macos'
         run: |
           APP="dist/LessonRecorder.app"
           ARCH="${{ matrix.arch }}"
           VER="${{ steps.version.outputs.VERSION }}"
-          DMG="dist/LessonRecorder_v${VER}_macOS_${ARCH}.dmg"
-          TMP="dist/tmp_rw.dmg"
+          ZIP="dist/LessonRecorder_v${VER}_macOS_${ARCH}.zip"
 
-          hdiutil create -size 500m -fs HFS+ -volname "LessonRecorder" \
-                         -srcfolder "$APP" "$TMP"
-          hdiutil convert "$TMP" -format UDZO -imagekey zlib-level=9 -o "$DMG"
-          rm -f "$TMP"
-          echo "DMG_PATH=$DMG" >> "$GITHUB_ENV"
+          echo "App size: $(du -sh "$APP" | awk '{print $1}')"
+          echo "Free disk: $(df -h / | awk 'NR==2{print $4}')"
+
+          # Упаковываем в zip — не требует доп. дискового пространства
+          cd dist
+          zip -r --symlinks "../${ZIP}" LessonRecorder.app
+          cd ..
+
+          echo "ZIP size: $(du -sh "$ZIP" | awk '{print $1}')"
+          echo "DMG_PATH=${ZIP}" >> "$GITHUB_ENV"
 
       # ═══ Linux: AppImage + tar.gz ═════════════════════════════════════
       - name: Build Linux AppImage
@@ -180,10 +203,18 @@ jobs:
           cp "$APPDIR/LessonRecorder.desktop" \
              "$APPDIR/usr/share/applications/LessonRecorder.desktop"
 
-          [[ -f app_icon.png ]] && {
+          # Иконка — используем app_icon.png или создаём placeholder
+          if [[ -f app_icon.png ]]; then
             cp app_icon.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/LessonRecorder.png"
             cp app_icon.png "$APPDIR/LessonRecorder.png"
-          }
+          else
+            python3 -c "import struct,zlib; sig=b'\x89PNG\r\n\x1a\n'; \
+              d=b'\x00\xff\xff\xff'; cd=zlib.compress(d); \
+              ih=b'IHDR'+struct.pack('>IIBBBBB',1,1,8,2,0,0,0); \
+              open('icon.png','wb').write(sig + struct.pack('>I',13)+ih+struct.pack('>I',zlib.crc32(ih)&0xffffffff) + struct.pack('>I',len(cd))+b'IDAT'+cd+struct.pack('>I',zlib.crc32(b'IDAT'+cd)&0xffffffff) + struct.pack('>I',0)+b'IEND'+struct.pack('>I',zlib.crc32(b'IEND')&0xffffffff))"
+            cp icon.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/LessonRecorder.png"
+            cp icon.png "$APPDIR/LessonRecorder.png"
+          fi
 
           cat > "$APPDIR/AppRun" <<'EOF'
           #!/bin/bash
@@ -218,8 +249,9 @@ jobs:
         id: artifact_mac
         shell: bash
         run: |
-          f=$(ls dist/*.dmg | head -1)
-          echo "PATH=$f"           >> "$GITHUB_OUTPUT"
+          # Ищем .zip (новый формат) или .dmg (старый)
+          f=$(ls dist/*.zip dist/*.dmg 2>/dev/null | head -1)
+          echo "PATH=$f"             >> "$GITHUB_OUTPUT"
           echo "NAME=$(basename $f)" >> "$GITHUB_OUTPUT"
 
       - name: Find artifact (Linux)
@@ -242,6 +274,7 @@ jobs:
           path: |
             dist/installer/*.exe
             dist/*.dmg
+            dist/*.zip
             dist/*.AppImage
             dist/*.tar.gz
           retention-days: 1
@@ -298,8 +331,8 @@ jobs:
             | Платформа | Файл |
             |-----------|------|
             | 🪟 Windows 10/11 (64-bit) | `LessonRecorder_v..._Windows_x64_setup.exe` |
-            | 🍎 macOS (Apple Silicon M1/M2/M3) | `LessonRecorder_v..._macOS_arm64.dmg` |
-            | 🍎 macOS (Intel) | `LessonRecorder_v..._macOS_x64.dmg` |
+            | 🍎 macOS (Apple Silicon M1/M2/M3/M4) | `LessonRecorder_v..._macOS_arm64.zip` |
+            | 🍎 macOS (Intel) | `LessonRecorder_v..._macOS_x64.zip` |
             | 🐧 Linux (x64) AppImage | `LessonRecorder_v..._Linux_x64.AppImage` |
             | 🐧 Linux (x64) tar.gz | `LessonRecorder_v..._Linux_x64.tar.gz` |
 
