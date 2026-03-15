@@ -78,104 +78,34 @@ def _find_tesseract_cmd_uncached() -> str | None:
     # 1. Фиксированные пути Windows — мгновенно
     if sys.platform == "win32":
         for p in [
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
             r"C:\Program Files\Tesseract-OCR\tesseract.exe",
             r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
             r"C:\Tesseract-OCR\tesseract.exe",
             r"C:\Tesseract\tesseract.exe",
             r"C:\tools\Tesseract-OCR\tesseract.exe",
-<<<<<<< HEAD
-=======
-            r"C:\\Program Files\\Tesseract-OCR\\tesseract.exe",
-            r"C:\\Program Files (x86)\\Tesseract-OCR\\tesseract.exe",
-            r"C:\\Tesseract-OCR\\tesseract.exe",
-            r"C:\\Tesseract\\tesseract.exe",
-            r"C:\\tools\\Tesseract-OCR\\tesseract.exe",
->>>>>>> 23bcb08 (fix: QThread crash on mac, hide PyAudioWPatch on non-windows, cross-platform Tesseract installer)
-=======
->>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
         ]:
             if Path(p).exists():
                 return p
 
-<<<<<<< HEAD
-<<<<<<< HEAD
     # 2. Homebrew macOS (до PATH — шебанги могут не обновить PATH)
     if sys.platform == "darwin":
         for p in [
             "/opt/homebrew/bin/tesseract",   # Apple Silicon
             "/usr/local/bin/tesseract",       # Intel Mac
-=======
-    # 2. Homebrew (macOS) — до PATH, т.к. шебанги могут не обновить PATH
-    if sys.platform == "darwin":
-        for p in [
-            "/opt/homebrew/bin/tesseract",    # Apple Silicon
-            "/usr/local/bin/tesseract",        # Intel Mac
->>>>>>> 23bcb08 (fix: QThread crash on mac, hide PyAudioWPatch on non-windows, cross-platform Tesseract installer)
-=======
-    # 2. Homebrew macOS (до PATH — шебанги могут не обновить PATH)
-    if sys.platform == "darwin":
-        for p in [
-            "/opt/homebrew/bin/tesseract",   # Apple Silicon
-            "/usr/local/bin/tesseract",       # Intel Mac
->>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
         ]:
             if Path(p).exists():
                 return p
 
-<<<<<<< HEAD
-<<<<<<< HEAD
     # 3. PATH — мгновенно (все платформы)
-=======
-    # 3. PATH — мгновенно (работает на всех платформах)
->>>>>>> 23bcb08 (fix: QThread crash on mac, hide PyAudioWPatch on non-windows, cross-platform Tesseract installer)
-=======
-    # 3. PATH — мгновенно (все платформы)
->>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
     found = shutil.which("tesseract")
     if found:
         return found
 
     # 4. Linux стандартные пути
     if sys.platform.startswith("linux"):
-<<<<<<< HEAD
-<<<<<<< HEAD
         for p in ["/usr/bin/tesseract", "/usr/local/bin/tesseract"]:
             if Path(p).exists():
                 return p
-
-    # 5. Реестр Windows — быстро
-    if sys.platform != "win32":
-        return None
-    try:
-        import winreg
-        for hive in [winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER]:
-            for sub in [r"SOFTWARE\Tesseract-OCR",
-                        r"SOFTWARE\WOW6432Node\Tesseract-OCR"]:
-                try:
-                    with winreg.OpenKey(hive, sub) as key:
-                        install_dir, _ = winreg.QueryValueEx(key, "InstallDir")
-                        exe = Path(install_dir) / "tesseract.exe"
-                        if exe.exists():
-                            return str(exe)
-                except (FileNotFoundError, OSError):
-                    pass
-    except ImportError:
-        pass
-=======
-        for p in [
-            "/usr/bin/tesseract",
-            "/usr/local/bin/tesseract",
-        ]:
-=======
-        for p in ["/usr/bin/tesseract", "/usr/local/bin/tesseract"]:
->>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
-            if Path(p).exists():
-                return p
->>>>>>> 23bcb08 (fix: QThread crash on mac, hide PyAudioWPatch on non-windows, cross-platform Tesseract installer)
 
     # 5. Реестр Windows — быстро
     if sys.platform != "win32":
@@ -441,116 +371,44 @@ class TesseractInstallerThread(QThread):
             self._install_windows()
 
     def _install_mac(self):
-<<<<<<< HEAD
-<<<<<<< HEAD
         brew = shutil.which("brew")
         if not brew:
             self.error.emit(
                 "Homebrew не найден.\n\n"
                 "Установи Homebrew: https://brew.sh\n"
                 "Затем выполни: brew install tesseract"
-=======
-        \"\"\"Устанавливает Tesseract через Homebrew на macOS.\"\"\"
-        import shutil
-        brew = shutil.which("brew")
-        if not brew:
-            self.error.emit(
-                "Homebrew не найден.\\n\\n"
-                "Установи Homebrew, затем выполни в терминале:\\n"
-                "  brew install tesseract"
->>>>>>> 23bcb08 (fix: QThread crash on mac, hide PyAudioWPatch on non-windows, cross-platform Tesseract installer)
-=======
-        brew = shutil.which("brew")
-        if not brew:
-            self.error.emit(
-                "Homebrew не найден.\n\n"
-                "Установи Homebrew: https://brew.sh\n"
-                "Затем выполни: brew install tesseract"
->>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
             )
             return
         self.status.emit("Устанавливаю Tesseract через Homebrew…")
         self.progress.emit(10)
         try:
-<<<<<<< HEAD
-<<<<<<< HEAD
             import subprocess as _sp
             proc = _sp.Popen([brew, "install", "tesseract"],
                              stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True)
             for line in proc.stdout:
                 if self._cancelled:
                     proc.kill(); return
-=======
-            proc = subprocess.Popen(
-                [brew, "install", "tesseract"],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True,
-            )
-            for line in proc.stdout:
-                if self._cancelled:
-                    proc.kill()
-                    return
->>>>>>> 23bcb08 (fix: QThread crash on mac, hide PyAudioWPatch on non-windows, cross-platform Tesseract installer)
-=======
-            import subprocess as _sp
-            proc = _sp.Popen([brew, "install", "tesseract"],
-                             stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True)
-            for line in proc.stdout:
-                if self._cancelled:
-                    proc.kill(); return
->>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
                 self.status.emit(line.strip()[:80])
             proc.wait()
             if proc.returncode == 0:
                 self.progress.emit(100)
                 self.finished.emit("")
             else:
-<<<<<<< HEAD
-<<<<<<< HEAD
                 self.error.emit(f"Homebrew вернул код {proc.returncode}\nПопробуй: brew install tesseract")
-=======
-                self.error.emit(
-                    f"Homebrew вернул код {proc.returncode}.\\n"
-                    "Попробуй вручную: brew install tesseract"
-                )
->>>>>>> 23bcb08 (fix: QThread crash on mac, hide PyAudioWPatch on non-windows, cross-platform Tesseract installer)
-=======
-                self.error.emit(f"Homebrew вернул код {proc.returncode}\nПопробуй: brew install tesseract")
->>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
         except Exception as e:
             self.error.emit(str(e))
 
     def _install_linux(self):
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
-        \"\"\"Устанавливает Tesseract через системный менеджер пакетов.\"\"\"
-        import shutil
->>>>>>> 23bcb08 (fix: QThread crash on mac, hide PyAudioWPatch on non-windows, cross-platform Tesseract installer)
-=======
->>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
         pkg_managers = [
             (shutil.which("apt-get"), ["sudo", "apt-get", "install", "-y", "tesseract-ocr"]),
             (shutil.which("dnf"),     ["sudo", "dnf", "install", "-y", "tesseract"]),
             (shutil.which("pacman"),  ["sudo", "pacman", "-S", "--noconfirm", "tesseract"]),
-<<<<<<< HEAD
-<<<<<<< HEAD
         ]
         import subprocess as _sp
-=======
-            (shutil.which("zypper"),  ["sudo", "zypper", "install", "-y", "tesseract-ocr"]),
-        ]
->>>>>>> 23bcb08 (fix: QThread crash on mac, hide PyAudioWPatch on non-windows, cross-platform Tesseract installer)
-=======
-        ]
-        import subprocess as _sp
->>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
         for mgr, cmd in pkg_managers:
             if mgr:
                 self.status.emit(f"Устанавливаю через {Path(mgr).name}…")
                 try:
-<<<<<<< HEAD
-<<<<<<< HEAD
                     proc = _sp.Popen(cmd, stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True)
                     for line in proc.stdout:
                         if self._cancelled:
@@ -559,50 +417,14 @@ class TesseractInstallerThread(QThread):
                     proc.wait()
                     if proc.returncode == 0:
                         self.progress.emit(100); self.finished.emit("")
-=======
-                    proc = subprocess.Popen(
-                        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
-                    )
-=======
-                    proc = _sp.Popen(cmd, stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True)
->>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
-                    for line in proc.stdout:
-                        if self._cancelled:
-                            proc.kill(); return
-                        self.status.emit(line.strip()[:80])
-                    proc.wait()
-                    if proc.returncode == 0:
-<<<<<<< HEAD
-                        self.progress.emit(100)
-                        self.finished.emit("")
->>>>>>> 23bcb08 (fix: QThread crash on mac, hide PyAudioWPatch on non-windows, cross-platform Tesseract installer)
-=======
-                        self.progress.emit(100); self.finished.emit("")
->>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
                     else:
                         self.error.emit(f"Менеджер пакетов вернул код {proc.returncode}")
                 except Exception as e:
                     self.error.emit(str(e))
                 return
-<<<<<<< HEAD
-<<<<<<< HEAD
         self.error.emit("Не удалось определить менеджер пакетов.\nsudo apt install tesseract-ocr")
 
     def _install_windows(self):
-=======
-        self.error.emit(
-            "Не удалось определить менеджер пакетов.\\n"
-            "Установи вручную: sudo apt install tesseract-ocr"
-        )
-
-    def _install_windows(self):
-        \"\"\"Скачивает и запускает установщик для Windows.\"\"\"
->>>>>>> 23bcb08 (fix: QThread crash on mac, hide PyAudioWPatch on non-windows, cross-platform Tesseract installer)
-=======
-        self.error.emit("Не удалось определить менеджер пакетов.\nsudo apt install tesseract-ocr")
-
-    def _install_windows(self):
->>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
         import requests
         try:
             self.status.emit("Подключаюсь к серверу…")
@@ -750,8 +572,6 @@ class TesseractTab(QWidget):
     def _on_downloaded(self, exe_path: str):
         self.pbar.setValue(100)
         self.cancel_btn.setVisible(False)
-<<<<<<< HEAD
-<<<<<<< HEAD
         global _tesseract_cmd_cache
         _tesseract_cmd_cache = False
         if not exe_path:
@@ -761,46 +581,15 @@ class TesseractTab(QWidget):
             self.dl_btn.setEnabled(True)
             return
         # Windows — запускаем скачанный .exe
-=======
-
-=======
-        global _tesseract_cmd_cache
-        _tesseract_cmd_cache = False
->>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
-        if not exe_path:
-            # Mac/Linux — установка завершена внутри потока
-            self.status_lbl.setText("✅ Tesseract установлен! Перезапустите приложение.")
-            self.installed.emit()
-            self.dl_btn.setEnabled(True)
-            return
-<<<<<<< HEAD
-
-        # Windows — запускаем скачанный .exe установщик
->>>>>>> 23bcb08 (fix: QThread crash on mac, hide PyAudioWPatch on non-windows, cross-platform Tesseract installer)
-=======
-        # Windows — запускаем скачанный .exe
->>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
         try:
             subprocess.Popen([exe_path], shell=True)
             self.status_lbl.setText(
                 "✅ Установщик запущен. После установки перезапусти приложение."
             )
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
-            global _tesseract_cmd_cache
-            _tesseract_cmd_cache = False
->>>>>>> 23bcb08 (fix: QThread crash on mac, hide PyAudioWPatch on non-windows, cross-platform Tesseract installer)
-=======
->>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
             self.installed.emit()
         except Exception as e:
             self.status_lbl.setText(f"❌ Не удалось запустить: {e}")
         self.dl_btn.setEnabled(True)
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
 
     def _on_error(self, msg: str):
         self.status_lbl.setText(f"❌ {msg}")
@@ -1196,11 +985,4 @@ class LangInstallDialog(QDialog):
 
     def closeEvent(self, event):
         self._langs_tab.closeEvent(event)
-<<<<<<< HEAD
         super().closeEvent(event)
-=======
-"""
->>>>>>> 23bcb08 (fix: QThread crash on mac, hide PyAudioWPatch on non-windows, cross-platform Tesseract installer)
-=======
-        super().closeEvent(event)
->>>>>>> 5cfb30d (fix: cross-platform Tesseract installer (Mac/Linux/Windows))
