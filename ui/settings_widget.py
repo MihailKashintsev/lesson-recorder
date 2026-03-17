@@ -969,6 +969,44 @@ class SettingsWidget(QWidget):
 
     # ── Пакеты ────────────────────────────────────────────────────────────
 
+    def _check_python_available(self) -> bool:
+        """
+        Проверяет что на компьютере есть реальный Python.
+        Возвращает True если найден и пригоден для использования.
+        Не бросает исключений.
+        """
+        import subprocess
+        from pathlib import Path as _P
+        try:
+            from core.python_path import find_python_exe
+            py = find_python_exe()
+        except Exception:
+            return False
+
+        # Не Store-заглушка
+        if "WindowsApps" in str(py):
+            return False
+        try:
+            if _P(py).stat().st_size < 10240:
+                return False
+        except Exception:
+            return False
+
+        # Реально запускается и возвращает версию
+        flags = 0
+        if sys.platform == "win32":
+            try: flags = subprocess.CREATE_NO_WINDOW
+            except AttributeError: pass
+        try:
+            r = subprocess.run(
+                [py, "--version"],
+                capture_output=True, text=True, timeout=5,
+                creationflags=flags,
+            )
+            return r.returncode == 0 and "Python 3" in r.stdout + r.stderr
+        except Exception:
+            return False
+
     def _build_packages_group(self, c: dict) -> QGroupBox:
         import webbrowser as _wb
         group = QGroupBox("Python-зависимости")
@@ -977,16 +1015,7 @@ class SettingsWidget(QWidget):
         outer.setContentsMargins(16, 16, 16, 16)
 
         # ── Баннер Python (показываем если Python не найден) ──────────────
-        python_ok = True
-        try:
-            from core.python_path import find_python_exe
-            py = find_python_exe()
-            from pathlib import Path as _P
-            # Store-заглушки не считаем
-            if "WindowsApps" in py or _P(py).stat().st_size < 10240:
-                python_ok = False
-        except Exception:
-            python_ok = False
+        python_ok = self._check_python_available()
 
         if not python_ok:
             py_banner = QWidget()

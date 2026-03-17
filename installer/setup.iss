@@ -42,7 +42,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Messages]
 russian.WelcomeLabel1=Добро пожаловать в мастер установки [name]
-russian.WelcomeLabel2=Программа установит [name] {#MyAppVersion} на ваш компьютер.%n%nЕсли Python не установлен, он будет скачан и установлен автоматически (~25 МБ).%n%nНажмите Далее для продолжения.
+russian.WelcomeLabel2=Программа установит [name] {#MyAppVersion} на ваш компьютер.%n%nДля работы транскрипции потребуется Python 3.10+.%n%nНажмите Далее для продолжения.
 
 [Tasks]
 Name: "desktopicon"; Description: "Ярлык на Рабочем столе";        GroupDescription: "Дополнительные ярлыки:"
@@ -52,9 +52,7 @@ Name: "startupicon"; Description: "Запускать при входе в Windo
 ; Основное приложение
 Source: "..\dist\LessonRecorder\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
-; PS1-скрипты — извлекаются во временную папку во время установки
-Source: "install_python.ps1";   DestDir: "{tmp}"; Flags: deleteafterinstall
-Source: "install_packages.ps1"; DestDir: "{tmp}"; Flags: deleteafterinstall
+; (Python и пакеты устанавливаются пользователем самостоятельно)
 
 [Icons]
 Name: "{group}\{#MyAppName}";           Filename: "{app}\{#MyAppExeName}"
@@ -63,19 +61,6 @@ Name: "{userdesktop}\{#MyAppName}";     Filename: "{app}\{#MyAppExeName}"; Tasks
 Name: "{userstartup}\{#MyAppName}";     Filename: "{app}\{#MyAppExeName}"; Tasks: startupicon
 
 [Run]
-; Шаг 1: Установка Python (если не установлен)
-Filename: "powershell.exe"; \
-  Parameters: "-ExecutionPolicy Bypass -NonInteractive -WindowStyle Hidden -File ""{tmp}\install_python.ps1"" -PythonVersion ""{#PythonVersion}"" -PythonURL ""{#PythonURL}"" -MinVersion ""{#PythonMinVer}"""; \
-  StatusMsg: "Проверка и установка Python..."; \
-  Flags: waituntilterminated runhidden
-
-; Шаг 2: Установка pip-пакетов
-Filename: "powershell.exe"; \
-  Parameters: "-ExecutionPolicy Bypass -NonInteractive -WindowStyle Hidden -File ""{tmp}\install_packages.ps1"""; \
-  StatusMsg: "Установка компонентов транскрипции (2-5 мин)..."; \
-  Flags: waituntilterminated runhidden
-
-; Запустить приложение
 Filename: "{app}\{#MyAppExeName}"; \
   Description: "Запустить {#MyAppName}"; \
   Flags: nowait postinstall skipifsilent
