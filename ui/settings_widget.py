@@ -970,12 +970,96 @@ class SettingsWidget(QWidget):
     # ── Пакеты ────────────────────────────────────────────────────────────
 
     def _build_packages_group(self, c: dict) -> QGroupBox:
+        import webbrowser as _wb
         group = QGroupBox("Python-зависимости")
         outer = QVBoxLayout(group)
         outer.setSpacing(6)
         outer.setContentsMargins(16, 16, 16, 16)
 
-        # Кнопка "установить всё"
+        # ── Баннер Python (показываем если Python не найден) ──────────────
+        python_ok = True
+        try:
+            from core.python_path import find_python_exe
+            py = find_python_exe()
+            from pathlib import Path as _P
+            # Store-заглушки не считаем
+            if "WindowsApps" in py or _P(py).stat().st_size < 10240:
+                python_ok = False
+        except Exception:
+            python_ok = False
+
+        if not python_ok:
+            py_banner = QWidget()
+            py_banner.setStyleSheet(
+                f"background:#1e1400; border:1px solid #ffb30066;"
+                f" border-radius:10px;"
+            )
+            py_vbox = QVBoxLayout(py_banner)
+            py_vbox.setContentsMargins(14, 12, 14, 12)
+            py_vbox.setSpacing(8)
+
+            row1 = QHBoxLayout(); row1.setSpacing(10)
+            icon_lbl = QLabel("⚠️")
+            icon_lbl.setStyleSheet("font-size:20px;")
+            row1.addWidget(icon_lbl)
+            title_lbl = QLabel("<b>Python не установлен</b>")
+            title_lbl.setStyleSheet(f"color:#ffb300; font-size:13px;")
+            title_lbl.setTextFormat(Qt.TextFormat.RichText)
+            row1.addWidget(title_lbl, stretch=1)
+            py_vbox.addLayout(row1)
+
+            desc_lbl = QLabel(
+                "Без Python невозможно устанавливать пакеты и запускать транскрипцию.<br>"
+                "Скачайте Python 3.10+ с официального сайта и установите его."
+            )
+            desc_lbl.setWordWrap(True)
+            desc_lbl.setTextFormat(Qt.TextFormat.RichText)
+            desc_lbl.setStyleSheet(f"color:{c['text_muted']}; font-size:12px;")
+            py_vbox.addWidget(desc_lbl)
+
+            btn_row = QHBoxLayout(); btn_row.setSpacing(8)
+
+            btn_py = QPushButton("🌐  Скачать Python (python.org)")
+            btn_py.setFixedHeight(32)
+            btn_py.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn_py.setStyleSheet(
+                "QPushButton{background:#ffb300;color:#000;border:none;"
+                "border-radius:7px;font-size:12px;font-weight:600;padding:0 16px;}"
+                "QPushButton:hover{background:#ffc933;}"
+            )
+            btn_py.clicked.connect(lambda: _wb.open("https://www.python.org/downloads/"))
+            btn_row.addWidget(btn_py)
+
+            btn_guide = QPushButton("📖  Инструкция")
+            btn_guide.setFixedHeight(32)
+            btn_guide.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn_guide.setStyleSheet(
+                f"QPushButton{{background:transparent;color:#ffb300;"
+                f"border:1px solid #ffb30088;border-radius:7px;"
+                f"font-size:12px;padding:0 14px;}}"
+                f"QPushButton:hover{{background:#ffb30015;}}"
+            )
+            btn_guide.clicked.connect(lambda: _wb.open(
+                "https://www.python.org/downloads/windows/"
+            ))
+            btn_row.addWidget(btn_guide)
+            btn_row.addStretch()
+            py_vbox.addLayout(btn_row)
+
+            hint_lbl = QLabel(
+                "💡 При установке обязательно отметьте <b>«Add Python to PATH»</b>, "
+                "затем перезапустите LessonRecorder."
+            )
+            hint_lbl.setWordWrap(True)
+            hint_lbl.setTextFormat(Qt.TextFormat.RichText)
+            hint_lbl.setStyleSheet(
+                f"color:{c['text_muted']}; font-size:11px;"
+                f" background:#14100a; border-radius:6px; padding:8px 10px;"
+            )
+            py_vbox.addWidget(hint_lbl)
+            outer.addWidget(py_banner)
+
+        # ── Кнопка "установить всё" ───────────────────────────────────────
         hdr = QHBoxLayout()
         lbl_pkg = QLabel("Пакет")
         lbl_pkg.setStyleSheet(f"color:{c['text_muted']};font-size:11px;font-weight:600;")
@@ -983,8 +1067,10 @@ class SettingsWidget(QWidget):
         hdr.addStretch()
         btn_all = QPushButton("⬇  Установить всё отсутствующее")
         btn_all.setFixedHeight(26)
+        btn_all.setEnabled(python_ok)
         btn_all.setStyleSheet(
-            f"QPushButton{{background:{c['accent_blue']};color:#fff;border:none;"
+            f"QPushButton{{background:{c['accent_blue'] if python_ok else c['bg_input']};"
+            f"color:{'#fff' if python_ok else c['text_muted']};border:none;"
             f"border-radius:5px;font-size:11px;padding:0 12px;}}"
             f"QPushButton:hover{{background:{c['accent_blue']}cc;}}"
         )
