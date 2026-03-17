@@ -138,19 +138,27 @@ def _run_pip_show(pip_name: str) -> dict | None:
     import subprocess
     from pathlib import Path as _P
 
+    # Ищем Python безопасно — никогда не используем сам .exe как интерпретатор
+    python = None
     try:
         from core.python_path import find_python_exe
-        python = find_python_exe()
+        candidate = find_python_exe()
+        # Проверяем что имя файла содержит "python"
+        if "python" in _P(candidate).name.lower():
+            # Не возвращаем сами себя
+            try:
+                same = _P(candidate).resolve() == _P(sys.executable).resolve()
+            except Exception:
+                same = False
+            if not same:
+                python = candidate
     except Exception:
-        # Python не найден — в frozen-режиме не пытаемся использовать sys.executable
-        if getattr(sys, "frozen", False):
-            return None
-        python = sys.executable
+        pass
 
-    # Дополнительная защита: убеждаемся что нашли python.exe, а не само приложение
-    self_exe = _P(sys.executable).resolve()
-    if _P(python).resolve() == self_exe and getattr(sys, "frozen", False):
-        return None  # Нашли сами себя — Python не установлен
+    if python is None:
+        if getattr(sys, "frozen", False):
+            return None  # Python не найден — не спамим окнами
+        python = sys.executable
 
     flags = 0
     if sys.platform == "win32":
@@ -299,11 +307,24 @@ class PipThread(QThread):
         self.pip_name = pip_name
 
     def run(self):
+        from pathlib import Path as _P
+        python = None
         try:
             from core.python_path import find_python_exe
-            python = find_python_exe()
-        except RuntimeError as e:
-            self.done.emit(self.pip_name, False, str(e))
+            candidate = find_python_exe()
+            if "python" in _P(candidate).name.lower():
+                try:
+                    same = _P(candidate).resolve() == _P(sys.executable).resolve()
+                except Exception:
+                    same = False
+                if not same:
+                    python = candidate
+        except Exception:
+            pass
+
+        if python is None:
+            self.done.emit(self.pip_name, False,
+                "Python не найден. Переустановите LessonRecorder или установите Python с python.org")
             return
 
         try:

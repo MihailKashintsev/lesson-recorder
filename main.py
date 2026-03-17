@@ -34,32 +34,15 @@ REQUIRED = [
 def _pip_show_installed(pip_name: str) -> bool:
     """
     Проверяет установку через 'pip show'.
-
-    ВАЖНО: никогда не используем sys.executable как fallback в frozen-режиме!
-    В frozen .exe sys.executable = LessonRecorder.exe.
-    subprocess.run([LessonRecorder.exe, "-m", "pip", ...]) открывает новое
-    окно приложения — бесконечная цепочка окон (спамилка).
-
-    Если Python не найден в frozen-режиме → True (не показываем ложное
-    предупреждение; пользователь увидит ошибку при реальном использовании).
+    Использует _find_real_python() — никогда не запускает сам exe как интерпретатор.
     """
     import subprocess
-    from pathlib import Path as _P
 
-    try:
-        from core.python_path import find_python_exe
-        python = find_python_exe()
-    except Exception:
-        if getattr(sys, "frozen", False):
-            return True
-        python = sys.executable
-
-    # Защита: не используем сами себя как интерпретатор
-    try:
-        if _P(python).resolve() == _P(sys.executable).resolve() and getattr(sys, "frozen", False):
-            return True
-    except Exception:
-        pass
+    python = _find_real_python()
+    if python is None:
+        # Python не найден — не спамим окнами, считаем "установленным"
+        # (ошибка появится при реальном использовании)
+        return True
 
     flags = 0
     if sys.platform == "win32":
@@ -82,7 +65,6 @@ def _pip_show_installed(pip_name: str) -> bool:
         return True
     except Exception:
         return True
-
 def _missing_packages():
     """Проверяет все пакеты параллельно чтобы не блокировать запуск."""
     from concurrent.futures import ThreadPoolExecutor
@@ -269,8 +251,54 @@ def _set_app_id():
         pass
 
 
+def _enforce_single_instance():
+    """
+    Windows: создаём именованный мьютекс.
+    Если он уже существует — значит копия уже запущена → немедленный выход.
+    Это ЕДИНСТВЕННАЯ надёжная защита от спама окон при повторном запуске.
+    """
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return
+    try:
+        import ctypes
+        mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "LessonRecorder_SingleInstance_v1")
+        err   = ctypes.windll.kernel32.GetLastError()
+        if err == 183:   # ERROR_ALREADY_EXISTS
+            sys.exit(0)
+    except Exception:
+        pass
+
+
+def _find_real_python() -> str | None:
+    """
+    Безопасный поиск Python — НИКОГДА не возвращает сам .exe в frozen-режиме.
+    Если Python не найден → None (не бросает исключение).
+    """
+    from pathlib import Path as _P
+    try:
+        from core.python_path import find_python_exe
+        python = find_python_exe()
+    except Exception:
+        return None
+
+    # Жёсткая проверка имени файла
+    name = _P(python).name.lower()
+    if "python" not in name:
+        return None
+
+    # Не возвращаем сами себя
+    try:
+        if _P(python).resolve() == _P(sys.executable).resolve():
+            return None
+    except Exception:
+        pass
+
+    return python
+
+
 def main():
-    _set_app_id()          # ← ПЕРВЫМ делом, до QApplication
+    _enforce_single_instance()  # ПЕРВЫМ делом — до всего остального
+    _set_app_id()
     missing = _missing_packages()
 
     try:
