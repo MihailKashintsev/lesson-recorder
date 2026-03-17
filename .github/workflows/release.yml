@@ -7,77 +7,173 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  # ── Windows ────────────────────────────────────────────────────────────────
+  build-windows:
     runs-on: windows-latest
     permissions:
       contents: write
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements-build.txt
           pip install pyinstaller packaging
-
-      - name: Read version
-        id: version
+      - name: Build with PyInstaller
+        run: pyinstaller LessonRecorder.spec --clean --noconfirm
+      - name: Install Inno Setup
+        run: choco install innosetup --yes --no-progress
+      - name: Build installer
         run: |
-          $ver = python -c "from version import __version__; print(__version__)"
-          echo "VERSION=$ver" >> $env:GITHUB_OUTPUT
-          echo "Version: $ver"
+          New-Item -ItemType Directory -Force -Path "dist\installer" | Out-Null
+          iscc installer\setup.iss
+          $ver = "${{ github.ref_name }}".TrimStart("v")
+          $src = Get-ChildItem "dist\installer\*.exe" | Select-Object -First 1
+          if ($src) {
+            $dstName = "LessonRecorder_v${ver}_Windows_x64_setup.exe"
+            Rename-Item -Path $src.FullName -NewName $dstName -Force
+          }
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: dist/installer/*.exe
+          retention-days: 1
 
+  # ── macOS ARM64 (Apple Silicon) ───────────────────────────────────────────
+  build-macos-arm:
+    runs-on: macos-15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-build.txt
+          pip install pyinstaller packaging
+      - name: Build with PyInstaller
+        run: pyinstaller LessonRecorder.spec --clean --noconfirm
+      - name: Package as zip
+        run: |
+          ver="${{ github.ref_name }}"
+          ver="${ver#v}"
+          cd dist
+          zip -r --symlinks "LessonRecorder_v${ver}_macOS_arm64.zip" LessonRecorder.app
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: dist/*.zip
+          retention-days: 1
+
+  # ── macOS Intel (x86_64) ──────────────────────────────────────────────────
+  build-macos-intel:
+    runs-on: macos-15-intel
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-build.txt
+          pip install pyinstaller packaging
+      - name: Build with PyInstaller
+        run: pyinstaller LessonRecorder.spec --clean --noconfirm
+      - name: Package as zip
+        run: |
+          ver="${{ github.ref_name }}"
+          ver="${ver#v}"
+          cd dist
+          zip -r --symlinks "LessonRecorder_v${ver}_macOS_x64.zip" LessonRecorder.app
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-x64
+          path: dist/*.zip
+          retention-days: 1
+
+  # ── Linux x64 ─────────────────────────────────────────────────────────────
+  build-linux:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libportaudio2 libpulse0 libasound2
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-build.txt
+          pip install pyinstaller packaging
+      - name: Create placeholder icon if missing
+        run: python3 make_icon.py
+      - name: Build with PyInstaller
+        run: pyinstaller LessonRecorder.spec --clean --noconfirm
+      - name: Package
+        run: |
+          ver="${{ github.ref_name }}"
+          ver="${ver#v}"
+          cd dist
+          tar -czf "LessonRecorder_v${ver}_Linux_x64.tar.gz" LessonRecorder/
+          cp LessonRecorder/LessonRecorder "LessonRecorder_v${ver}_Linux_x64.AppImage"
+          chmod +x "LessonRecorder_v${ver}_Linux_x64.AppImage"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x64
+          path: |
+            dist/*.tar.gz
+            dist/*.AppImage
+          retention-days: 1
+
+  # ── Publish Release ───────────────────────────────────────────────────────
+  publish:
+    needs: [build-windows, build-macos-arm, build-macos-intel, build-linux]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-files
+          merge-multiple: true
+      - name: List files
+        run: find release-files -type f | sort
       - name: Read changelog
         id: changelog
         run: |
-          if (Test-Path "RELEASE_NOTES.md") {
-            $notes = Get-Content "RELEASE_NOTES.md" -Raw -Encoding utf8
-          } else {
-            $notes = "_Описание изменений не предоставлено._"
-          }
-          $delimiter = "NOTES_EOF_$([System.Guid]::NewGuid().ToString('N'))"
-          echo "BODY<<$delimiter"  >> $env:GITHUB_OUTPUT
-          echo $notes              >> $env:GITHUB_OUTPUT
-          echo $delimiter          >> $env:GITHUB_OUTPUT
-
-      - name: Build with PyInstaller
-        run: pyinstaller LessonRecorder.spec --clean --noconfirm
-
-      - name: Install Inno Setup
-        run: choco install innosetup --yes --no-progress
-
-      - name: Build installer
-        run: |
-          # Папка выходных файлов
-          New-Item -ItemType Directory -Force -Path "dist\installer" | Out-Null
-          # Сборка установщика
-          iscc installer\setup.iss
-          # Переименовываем с версией
-          $src = Get-ChildItem "dist\installer\*.exe" | Select-Object -First 1
-          if ($src) {
-            $dstName = "LessonRecorder_v${{ steps.version.outputs.VERSION }}_setup.exe"
-            $dstPath = Join-Path $src.DirectoryName $dstName
-            if ($src.FullName -ne $dstPath) {
-              Rename-Item -Path $src.FullName -NewName $dstName -Force
-            }
-          }
-
-      - name: Find installer
-        id: installer
-        run: |
-          $file = Get-ChildItem -Path "dist\installer\*.exe" | Select-Object -First 1
-          echo "PATH=$($file.FullName)" >> $env:GITHUB_OUTPUT
-          echo "NAME=$($file.Name)"     >> $env:GITHUB_OUTPUT
-          echo "Found: $($file.FullName)"
-
+          if [ -f RELEASE_NOTES.md ]; then
+            BODY=$(cat RELEASE_NOTES.md)
+          else
+            BODY="_Описание изменений не предоставлено._"
+          fi
+          EOF=$(uuidgen)
+          echo "BODY<<$EOF" >> $GITHUB_OUTPUT
+          echo "$BODY"      >> $GITHUB_OUTPUT
+          echo "$EOF"       >> $GITHUB_OUTPUT
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -88,20 +184,24 @@ jobs:
 
             ---
 
-            ### Установка
-            1. Скачайте `${{ steps.installer.outputs.NAME }}`
-            2. Запустите установщик
-            3. Python и компоненты транскрипции установятся автоматически
-            4. Готово — при следующем запуске приложение само предложит обновиться
+            ## 📦 Скачать
 
-            > **Python не требуется устанавливать отдельно** — установщик сделает это автоматически
+            | Платформа | Файл |
+            |-----------|------|
+            | 🖥 Windows 10/11 (64-bit) | `LessonRecorder_..._Windows_x64_setup.exe` |
+            | 🍎 macOS Apple Silicon (M1/M2/M3/M4) | `LessonRecorder_..._macOS_arm64.zip` |
+            | 🍎 macOS Intel | `LessonRecorder_..._macOS_x64.zip` |
+            | 🐧 Linux AppImage | `LessonRecorder_..._Linux_x64.AppImage` |
+            | 🐧 Linux tar.gz | `LessonRecorder_..._Linux_x64.tar.gz` |
 
-            ### Системные требования
-            - Windows 10/11 (64-bit)
-            - 4 GB RAM (8 GB рекомендуется)
-            - Интернет при первой установке (для Python и компонентов)
-            - Интернет для AI конспектов (Groq / Gemini / OpenRouter — бесплатно)
-          files: ${{ steps.installer.outputs.PATH }}
+            ## 🔧 Установка
+
+            **Windows:** запустите `.exe` — Python установится автоматически.
+
+            **macOS:** распакуйте `.zip`, перетащите в Программы. При блокировке: `xattr -cr /Applications/LessonRecorder.app`
+
+            **Linux AppImage:** `chmod +x LessonRecorder*.AppImage && ./LessonRecorder*.AppImage`
+          files: release-files/**
           draft: false
           prerelease: false
         env:
