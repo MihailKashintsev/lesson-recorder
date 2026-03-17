@@ -130,13 +130,27 @@ def _run_pip_show(pip_name: str) -> dict | None:
     реальную pip-установку. importlib.util.find_spec НЕ используем:
     в замороженном .exe он находит пакеты внутри _internal (PyInstaller-бандл)
     и говорит «установлен», хотя pip их не ставил отдельно.
+
+    ВАЖНО: никогда не используем sys.executable как fallback в frozen-режиме!
+    sys.executable = LessonRecorder.exe → subprocess запустит новый экземпляр
+    приложения → бесконечная цепочка открывающихся окон.
     """
     import subprocess
+    from pathlib import Path as _P
+
     try:
         from core.python_path import find_python_exe
         python = find_python_exe()
     except Exception:
+        # Python не найден — в frozen-режиме не пытаемся использовать sys.executable
+        if getattr(sys, "frozen", False):
+            return None
         python = sys.executable
+
+    # Дополнительная защита: убеждаемся что нашли python.exe, а не само приложение
+    self_exe = _P(sys.executable).resolve()
+    if _P(python).resolve() == self_exe and getattr(sys, "frozen", False):
+        return None  # Нашли сами себя — Python не установлен
 
     flags = 0
     if sys.platform == "win32":
