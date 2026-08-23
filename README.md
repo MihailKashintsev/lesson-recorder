@@ -14,6 +14,27 @@
 
 ---
 
+## For engineers / reviewers
+
+**Pipeline:** `recorder` (mic + WASAPI loopback capture) → `transcriber` → optional `photo_ocr` → `summarizer`, wired together in a PyQt6 desktop shell (`ui/`).
+
+Transcription (`core/transcriber.py`, `core/transcribe_worker.py`) runs Whisper in a **separate subprocess**, not in-process. Reason: `faster-whisper`'s ctranslate2 backend can hard-crash the process on certain CPUs (AVX2/native issues) with no catchable Python exception — see `NATIVE_CRASH_CODES` in `core/transcriber.py`. Isolating it in a worker process means the crash just becomes a bad exit code, and the app can catch it and transparently retry with plain `openai-whisper` instead of taking the whole GUI down with it.
+
+The summarizer (`core/summarizer.py`) doesn't hardcode a single LLM vendor — it's a small `PROVIDERS` dict describing each backend (base URL, models, auth) behind one OpenAI-compatible HTTP client. That's deliberate: it lets a user in any region pick a provider that's actually reachable and affordable for them, instead of the app being useless the moment one API is blocked, rate-limited, or too expensive.
+
+**GigaChat (Sber) is a first-class provider here**, not an afterthought — it authenticates through Sber's own OAuth flow (`client_id`/`secret` → bearer token, `https://gigachat.devices.sberbank.ru/api/v1`), has a free tier of 150k tokens/month, and was included specifically so the app doesn't only support international LLMs — it supports Sber's own model on equal footing.
+
+Tech stack:
+- **PyQt6** — desktop UI
+- **openai-whisper** / **faster-whisper** — offline speech-to-text, with subprocess isolation + automatic fallback between the two
+- **sounddevice** + **scipy** — cross-platform audio I/O, plus WASAPI loopback capture on Windows for recording system audio
+- **pytesseract** + **OpenCV** — OCR on whiteboard/slide photos
+- **requests**-based OpenAI-compatible client — talks to DeepSeek, GigaChat, Groq, Gemini, OpenRouter, or any custom endpoint through one code path
+
+Tests: `pip install -r requirements-dev.txt && pytest`
+
+---
+
 ## Installation
 
 ### Windows
