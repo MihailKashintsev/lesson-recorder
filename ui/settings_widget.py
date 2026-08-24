@@ -1735,7 +1735,14 @@ class SettingsWidget(QWidget):
         self._uninstall_by_name(pkg["pip_name"])
 
     def _on_pip_done(self, pip_name: str, success: bool, output: str):
-        self._pip_threads.pop(pip_name, None)
+        # done приходит из run() потока прямо перед его возвратом — Qt может
+        # ещё не успеть пометить поток завершённым. wait() почти мгновенно
+        # дожидается реального конца, иначе pop() дропает последнюю ссылку
+        # и Python может собрать QThread, пока он формально "ещё бежит" —
+        # Qt падает в abort() (см. QThread: Destroyed while thread is running).
+        finished_thread = self._pip_threads.pop(pip_name, None)
+        if finished_thread is not None:
+            finished_thread.wait()
         row = self._pkg_rows.get(pip_name)
         if not row:
             return
@@ -1773,8 +1780,10 @@ class SettingsWidget(QWidget):
         row = self._pkg_rows.get(pip_name)
         if row:
             row["action_lbl"].setText("✅ Готово")
-        # Убираем временную ссылку
-        self._pip_threads.pop(f"__recheck_{pip_name}", None)
+        # Убираем временную ссылку — wait() на случай той же гонки, что в _on_pip_done
+        finished_thread = self._pip_threads.pop(f"__recheck_{pip_name}", None)
+        if finished_thread is not None:
+            finished_thread.wait()
 
     def _show_pip_log(self, pip_name: str, success: bool, output: str):
         """Показывает диалог с полным выводом pip."""

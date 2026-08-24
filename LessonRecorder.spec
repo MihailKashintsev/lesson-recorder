@@ -15,6 +15,9 @@ IS_WIN     = sys.platform == "win32"
 IS_MAC     = sys.platform == "darwin"
 IS_LINUX   = sys.platform.startswith("linux")
 
+sys.path.insert(0, str(BASE_DIR))
+from version import __version__ as APP_VERSION
+
 # ── Иконка (платформо-зависимая) ──────────────────────────────────────────
 def _icon():
     if IS_WIN:
@@ -144,8 +147,8 @@ if IS_MAC:
         info_plist={
             "CFBundleName": APP_NAME,
             "CFBundleDisplayName": APP_NAME,
-            "CFBundleVersion": "1.0.0",
-            "CFBundleShortVersionString": "1.0.0",
+            "CFBundleVersion": APP_VERSION,
+            "CFBundleShortVersionString": APP_VERSION,
             "NSMicrophoneUsageDescription":
                 "LessonRecorder использует микрофон для записи уроков.",
             "NSHighResolutionCapable": True,
