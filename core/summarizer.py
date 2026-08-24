@@ -165,6 +165,56 @@ def get_provider_config(provider_id: str) -> dict:
     return PROVIDERS.get(provider_id, PROVIDERS["deepseek"])
 
 
+class GigaChatAuthError(Exception):
+    """Ошибка получения OAuth-токена GigaChat, текст уже понятен пользователю
+    без дополнительной обработки — можно показывать as-is."""
+
+
+def fetch_gigachat_token(api_key: str) -> str:
+    """Получает OAuth access token для GigaChat.
+
+    Общая для Summarizer и кнопки «Проверить соединение» в настройках —
+    было продублировано в двух местах, и оба показывали пользователю сырой
+    текст requests-исключения без единого намёка, что делать с 401.
+    """
+    auth_url = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+    headers = {
+        "Authorization": f"Basic {api_key.strip()}",
+        "RqUID": str(uuid.uuid4()),
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+    try:
+        resp = requests.post(
+            auth_url,
+            headers=headers,
+            data={"scope": "GIGACHAT_API_PERS"},
+            verify=False,   # GigaChat использует корпоративный сертификат Сбера
+            timeout=15,
+        )
+        resp.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        if e.response is not None and e.response.status_code == 401:
+            raise GigaChatAuthError(
+                "Сбер отклонил авторизационные данные (401 Unauthorized).\n\n"
+                "Проверь на developers.sber.ru/studio:\n"
+                "• Скопирован именно «Authorization key» (готовая base64-строка "
+                "из личного кабинета) — не Client ID и не Client Secret по "
+                "отдельности\n"
+                "• В ключе нет лишних пробелов или переноса строки после вставки\n"
+                "• В проекте подключён доступ к GigaChat API — иногда нужно "
+                "отдельно принять условия использования после создания проекта\n"
+                "• Ключ не истёк и не был перевыпущен"
+            ) from e
+        code = e.response.status_code if e.response is not None else "?"
+        raise GigaChatAuthError(f"Сервер авторизации Сбера вернул ошибку {code}: {e}") from e
+    except requests.exceptions.RequestException as e:
+        raise GigaChatAuthError(
+            f"Не удалось связаться с сервером авторизации Сбера: {e}"
+        ) from e
+
+    return resp.json()["access_token"]
+
+
 class Summarizer(QThread):
     progress = pyqtSignal(str)
     finished = pyqtSignal(str)
@@ -182,22 +232,7 @@ class Summarizer(QThread):
                          else cfg["base_url"])
 
     def _get_gigachat_token(self) -> str:
-        """Получает OAuth access token для GigaChat."""
-        auth_url = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
-        headers = {
-            "Authorization": f"Basic {self.api_key.strip()}",
-            "RqUID": str(uuid.uuid4()),
-            "Content-Type": "application/x-www-form-urlencoded",
-        }
-        resp = requests.post(
-            auth_url,
-            headers=headers,
-            data={"scope": "GIGACHAT_API_PERS"},
-            verify=False,   # GigaChat использует корпоративный сертификат Сбера
-            timeout=15,
-        )
-        resp.raise_for_status()
-        return resp.json()["access_token"]
+        return fetch_gigachat_token(self.api_key)
 
     def _build_messages(self) -> list:
         """
@@ -327,5 +362,7 @@ class Summarizer(QThread):
             )
         except requests.exceptions.Timeout:
             self.error_occurred.emit("Сервер не ответил вовремя (таймаут 120с).")
+        except GigaChatAuthError as e:
+            self.error_occurred.emit(str(e))
         except Exception as e:
             self.error_occurred.emit(f"Неожиданная ошибка: {e}")

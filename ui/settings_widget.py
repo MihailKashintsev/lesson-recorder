@@ -965,21 +965,12 @@ class SettingsWidget(QWidget):
                 QMessageBox.warning(self, "Нет ключа", "Укажи авторизационные данные GigaChat.")
                 return
             try:
-                import uuid
-                auth_resp = req.post(
-                    "https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
-                    headers={
-                        "Authorization": f"Basic {key}",
-                        "RqUID": str(uuid.uuid4()),
-                        "Content-Type": "application/x-www-form-urlencoded",
-                    },
-                    data={"scope": "GIGACHAT_API_PERS"},
-                    verify=False,
-                    timeout=10,
-                )
-                auth_resp.raise_for_status()
-                token = auth_resp.json()["access_token"]
+                from core.summarizer import fetch_gigachat_token, GigaChatAuthError
+                token = fetch_gigachat_token(key)
                 headers["Authorization"] = f"Bearer {token}"
+            except GigaChatAuthError as e:
+                QMessageBox.critical(self, "❌ Ошибка авторизации GigaChat", str(e))
+                return
             except Exception as e:
                 QMessageBox.critical(self, "❌ Ошибка авторизации GigaChat",
                     f"Не удалось получить токен:\n{e}")
