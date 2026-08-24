@@ -53,6 +53,25 @@ def find_python_exe() -> str:
             if resolved != self_exe:
                 return str(found_path)
 
+    # ── 2b. Стандартные папки macOS (Homebrew, python.org) ────────────────────
+    if sys.platform == "darwin":
+        mac_candidates = [
+            "/opt/homebrew/bin/python3",   # Homebrew (Apple Silicon)
+            "/usr/local/bin/python3",      # Homebrew (Intel)
+        ]
+        try:
+            import glob
+            mac_candidates += sorted(
+                glob.glob("/Library/Frameworks/Python.framework/Versions/*/bin/python3"),
+                reverse=True,
+            )  # python.org installer
+        except Exception:
+            pass
+        for c in mac_candidates:
+            found = _check_exe(c)
+            if found:
+                return found
+
     # ── 3. Реестр Windows ─────────────────────────────────────────────────────
     try:
         import winreg
@@ -152,6 +171,17 @@ def find_python_exe() -> str:
                     return exe
         except Exception:
             pass
+
+    if sys.platform == "darwin":
+        raise RuntimeError(
+            "Python не найден на этом компьютере.\n\n"
+            "Решение:\n"
+            "  1. Запустите mac_setup.sh из папки проекта — он сам поставит\n"
+            "     Homebrew (если нужно) и Python.\n\n"
+            "  2. Или установите Python вручную:\n"
+            "     brew install python3\n"
+            "     (либо скачайте с https://www.python.org/downloads/macos/)"
+        )
 
     raise RuntimeError(
         "Python не найден на этом компьютере.\n\n"

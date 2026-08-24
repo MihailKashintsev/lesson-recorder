@@ -52,7 +52,7 @@ Tests: `pip install -r requirements-dev.txt && pytest`
 2. Open the DMG and drag the icon to Applications
 3. First launch: **right-click → Open → Open**
 
-> If needed: `brew install python3`
+> If Python is missing, run `./mac_setup.sh` from the project folder once — it installs Homebrew and Python automatically, no manual steps needed. (There's no macOS installer/postinstall hook yet, so this is a one-time manual run rather than fully silent like the Windows `.exe` — see the engineering notes above.)
 
 ### Linux
 

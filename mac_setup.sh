@@ -24,24 +24,24 @@ echo ""
 # ── Шаг 1: Python ────────────────────────────────────────────────────────────
 step "1 / Проверка Python"
 
-# Ищем python3 в нескольких местах
-PYTHON=""
-for CMD in python3.14 python3.13 python3.12 python3.11 python3 python; do
-    FOUND=$(command -v "$CMD" 2>/dev/null || true)
-    if [[ -n "$FOUND" ]]; then
-        # Проверяем что версия >= 3.10
-        VER=$("$FOUND" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "0.0")
-        MAJOR=$(echo "$VER" | cut -d. -f1)
-        MINOR=$(echo "$VER" | cut -d. -f2)
-        if [[ $MAJOR -ge 3 && $MINOR -ge 10 ]]; then
-            PYTHON="$FOUND"
-            break
-        fi
-    fi
-done
+TARGET_PY_VERSION="3.13"   # Совпадает с версией, которую ставит installer/install_python.ps1 на Windows
 
-# Также проверяем /Library/Frameworks (стандартный путь python.org installer)
-if [[ -z "$PYTHON" ]]; then
+# Ищем python3 в нескольких местах (PATH + /Library/Frameworks — путь python.org installer)
+find_python() {
+    PYTHON=""
+    for CMD in python3.14 python3.13 python3.12 python3.11 python3 python; do
+        FOUND=$(command -v "$CMD" 2>/dev/null || true)
+        if [[ -n "$FOUND" ]]; then
+            VER=$("$FOUND" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "0.0")
+            MAJOR=$(echo "$VER" | cut -d. -f1)
+            MINOR=$(echo "$VER" | cut -d. -f2)
+            if [[ $MAJOR -ge 3 && $MINOR -ge 10 ]]; then
+                PYTHON="$FOUND"
+                return
+            fi
+        fi
+    done
+
     for VER_DIR in /Library/Frameworks/Python.framework/Versions/*/; do
         CANDIDATE="${VER_DIR}bin/python3"
         if [[ -x "$CANDIDATE" ]]; then
@@ -50,14 +50,43 @@ if [[ -z "$PYTHON" ]]; then
             MINOR=$(echo "$VER" | cut -d. -f2)
             if [[ $MAJOR -ge 3 && $MINOR -ge 10 ]]; then
                 PYTHON="$CANDIDATE"
-                break
+                return
             fi
         fi
     done
-fi
+}
 
+find_python
+
+# Python не найден — устанавливаем автоматически (как на Windows: скрипт
+# сам ставит Python, пользователю ничего вручную делать не нужно).
 if [[ -z "$PYTHON" ]]; then
-    err "Python 3.10+ не найден. Установи: brew install python3"
+    warn "Python 3.10+ не найден — устанавливаю автоматически..."
+
+    if ! command -v brew >/dev/null 2>&1; then
+        info "Homebrew не найден — устанавливаю Homebrew..."
+        NONINTERACTIVE=1 /bin/bash -c \
+            "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
+            || err "Не удалось установить Homebrew автоматически. Установи Python вручную: https://www.python.org/downloads/macos/"
+
+        # brew ставится в разные места на Apple Silicon и Intel — подключаем в PATH
+        if [[ -x /opt/homebrew/bin/brew ]]; then
+            eval "$(/opt/homebrew/bin/brew shellenv)"
+        elif [[ -x /usr/local/bin/brew ]]; then
+            eval "$(/usr/local/bin/brew shellenv)"
+        fi
+        ok "Homebrew установлен"
+    fi
+
+    info "Устанавливаю Python $TARGET_PY_VERSION через Homebrew..."
+    brew install "python@${TARGET_PY_VERSION}" \
+        || err "Не удалось установить Python автоматически. Установи вручную: brew install python3"
+
+    find_python
+    if [[ -z "$PYTHON" ]]; then
+        err "Python установлен, но не найден в PATH. Открой новый терминал и запусти скрипт снова."
+    fi
+    ok "Python установлен автоматически"
 fi
 
 PY_VER=$("$PYTHON" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')")

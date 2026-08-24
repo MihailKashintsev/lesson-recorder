@@ -136,13 +136,33 @@ def install_python_windows():
 
 
 def install_python_macos():
-    """Устанавливает Python через Homebrew (macOS)."""
+    """Устанавливает Python через Homebrew (macOS). Ставит сам Homebrew, если его нет."""
     brew = shutil.which("brew")
     if not brew:
-        log("⚠️  Homebrew не найден.", "yellow")
-        log("   Установи Python вручную: https://www.python.org/downloads/macos/")
-        log("   Или установи Homebrew: https://brew.sh  и затем: brew install python3")
-        return False
+        log("⚠️  Homebrew не найден — устанавливаю автоматически...", "yellow")
+        try:
+            install_cmd = (
+                'NONINTERACTIVE=1 /bin/bash -c '
+                '"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+            )
+            r = subprocess.run(install_cmd, shell=True)
+            if r.returncode != 0:
+                raise RuntimeError(f"Homebrew installer exited {r.returncode}")
+        except Exception as e:
+            log(f"❌ Не удалось установить Homebrew автоматически: {e}", "red")
+            log("   Установи Python вручную: https://www.python.org/downloads/macos/")
+            log("   Или установи Homebrew: https://brew.sh  и затем: brew install python3")
+            return False
+
+        # Homebrew ставится в /opt/homebrew (Apple Silicon) или /usr/local (Intel)
+        for candidate in ("/opt/homebrew/bin/brew", "/usr/local/bin/brew"):
+            if Path(candidate).exists():
+                brew = candidate
+                break
+        if not brew:
+            log("❌ Homebrew установлен, но не найден по стандартному пути.", "red")
+            return False
+        log("✅ Homebrew установлен", "green")
 
     log(f"\n🍺 Устанавливаю Python {REQUIRED_VERSION} через Homebrew...", "blue")
     r = subprocess.run([brew, "install", f"python@{REQUIRED_VERSION}"])
