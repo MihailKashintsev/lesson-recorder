@@ -1,5 +1,5 @@
 # Единственное место где хранится версия приложения.
-__version__ = "0.0.10"
+__version__ = "0.0.11"
 
 APP_NAME = "LessonRecorder"
 GITHUB_USER = "MihailKashintsev"
