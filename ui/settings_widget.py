@@ -425,8 +425,15 @@ DEFAULTS = {
     "ai_model": "deepseek-chat",
     "ai_custom_url": "",
     "ai_custom_model": "",
+    "gigachat_scope": "GIGACHAT_API_PERS",
     "theme": "dark",
 }
+
+GIGACHAT_SCOPES = [
+    ("Физлицо (по умолчанию)", "GIGACHAT_API_PERS"),
+    ("Юрлицо — pay-as-you-go (B2B)", "GIGACHAT_API_B2B"),
+    ("Юрлицо — корпоративный тариф", "GIGACHAT_API_CORP"),
+]
 
 
 def load_settings() -> dict:
@@ -727,6 +734,26 @@ class SettingsWidget(QWidget):
         key_row.addWidget(self.toggle_key_btn)
         ai_layout.addLayout(key_row)
 
+        # Тип аккаунта GigaChat — влияет на OAuth scope. Неверный scope для
+        # твоего типа проекта в Sber Studio — самая частая причина 400
+        # Bad Request на этапе получения токена (не 401 — это отдельная,
+        # более редкая проблема с самим ключом).
+        scope_row = QHBoxLayout()
+        self.gigachat_scope_lbl = QLabel("Тип аккаунта:")
+        self.gigachat_scope_lbl.setFixedWidth(120)
+        self.gigachat_scope_lbl.setStyleSheet(f"color: {c['text_muted']};")
+        self.combo_gigachat_scope = QComboBox()
+        for label, scope_value in GIGACHAT_SCOPES:
+            self.combo_gigachat_scope.addItem(label, scope_value)
+        saved_scope = self.settings.get("gigachat_scope", "GIGACHAT_API_PERS")
+        for i in range(self.combo_gigachat_scope.count()):
+            if self.combo_gigachat_scope.itemData(i) == saved_scope:
+                self.combo_gigachat_scope.setCurrentIndex(i)
+                break
+        scope_row.addWidget(self.gigachat_scope_lbl)
+        scope_row.addWidget(self.combo_gigachat_scope)
+        ai_layout.addLayout(scope_row)
+
         # Модель — QStackedWidget вместо двух виджетов в одной строке
         model_row = QHBoxLayout()
         model_lbl = QLabel("Модель:")
@@ -887,6 +914,9 @@ class SettingsWidget(QWidget):
 
         self.edit_api_key.setPlaceholderText(cfg.get("key_hint", ""))
 
+        self.gigachat_scope_lbl.setVisible(is_gigachat)
+        self.combo_gigachat_scope.setVisible(is_gigachat)
+
         is_custom = provider_id == "custom"
         # ✅ ИСПРАВЛЕНО: переключаем стек (index 0 = combo, 1 = lineEdit)
         # вместо setVisible() на двух виджетах в одной строке
@@ -966,7 +996,8 @@ class SettingsWidget(QWidget):
                 return
             try:
                 from core.summarizer import fetch_gigachat_token, GigaChatAuthError
-                token = fetch_gigachat_token(key)
+                scope = self.combo_gigachat_scope.currentData()
+                token = fetch_gigachat_token(key, scope=scope)
                 headers["Authorization"] = f"Bearer {token}"
             except GigaChatAuthError as e:
                 QMessageBox.critical(self, "❌ Ошибка авторизации GigaChat", str(e))
@@ -1869,6 +1900,7 @@ class SettingsWidget(QWidget):
             "ai_model": self._get_current_model(),
             "ai_custom_url": self.edit_custom_url.text().strip(),
             "ai_custom_model": self.edit_custom_model.text().strip(),
+            "gigachat_scope": self.combo_gigachat_scope.currentData(),
             "theme": self._theme,
         })
         save_settings(self.settings)

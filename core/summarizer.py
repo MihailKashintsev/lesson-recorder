@@ -170,12 +170,17 @@ class GigaChatAuthError(Exception):
     без дополнительной обработки — можно показывать as-is."""
 
 
-def fetch_gigachat_token(api_key: str) -> str:
+def fetch_gigachat_token(api_key: str, scope: str = "GIGACHAT_API_PERS") -> str:
     """Получает OAuth access token для GigaChat.
 
     Общая для Summarizer и кнопки «Проверить соединение» в настройках —
     было продублировано в двух местах, и оба показывали пользователю сырой
     текст requests-исключения без единого намёка, что делать с 401.
+
+    scope зависит от типа проекта в Sber Studio (физлицо / юрлицо PAYG /
+    юрлицо корпоративный) — неверный scope для типа проекта пользователя
+    даёт 400 Bad Request, а не 401, и это отдельная, более частая проблема,
+    чем реально неверный ключ.
     """
     auth_url = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
     headers = {
@@ -187,7 +192,7 @@ def fetch_gigachat_token(api_key: str) -> str:
         resp = requests.post(
             auth_url,
             headers=headers,
-            data={"scope": "GIGACHAT_API_PERS"},
+            data={"scope": scope},
             verify=False,   # GigaChat использует корпоративный сертификат Сбера
             timeout=15,
         )
@@ -205,6 +210,19 @@ def fetch_gigachat_token(api_key: str) -> str:
                 "отдельно принять условия использования после создания проекта\n"
                 "• Ключ не истёк и не был перевыпущен"
             ) from e
+        if e.response is not None and e.response.status_code == 400:
+            raise GigaChatAuthError(
+                f"Сбер отклонил запрос токена (400 Bad Request, scope={scope}).\n\n"
+                "Самая частая причина — тип аккаунта в настройках не совпадает "
+                "с тем, под каким создан проект в developers.sber.ru/studio:\n"
+                "• Физлицо → «Физлицо (по умолчанию)»\n"
+                "• Юрлицо с оплатой по факту использования → «Юрлицо — "
+                "pay-as-you-go (B2B)»\n"
+                "• Юрлицо с корпоративным тарифом → «Юрлицо — корпоративный "
+                "тариф»\n\n"
+                "Смени тип аккаунта в Настройках (появляется под ключом при "
+                "выбранном провайдере GigaChat) и попробуй снова."
+            ) from e
         code = e.response.status_code if e.response is not None else "?"
         raise GigaChatAuthError(f"Сервер авторизации Сбера вернул ошибку {code}: {e}") from e
     except requests.exceptions.RequestException as e:
@@ -221,18 +239,20 @@ class Summarizer(QThread):
     error_occurred = pyqtSignal(str)
 
     def __init__(self, transcript: str, provider: str, api_key: str,
-                 model: str, base_url: str = ""):
+                 model: str, base_url: str = "",
+                 gigachat_scope: str = "GIGACHAT_API_PERS"):
         super().__init__()
         self.transcript = transcript
         self.provider = provider
         self.api_key = api_key
         self.model = model
+        self.gigachat_scope = gigachat_scope
         cfg = get_provider_config(provider)
         self.base_url = (base_url.rstrip("/") if provider == "custom"
                          else cfg["base_url"])
 
     def _get_gigachat_token(self) -> str:
-        return fetch_gigachat_token(self.api_key)
+        return fetch_gigachat_token(self.api_key, scope=self.gigachat_scope)
 
     def _build_messages(self) -> list:
         """

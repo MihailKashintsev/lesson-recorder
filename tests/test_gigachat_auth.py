@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import requests
 
-from core.summarizer import fetch_gigachat_token, GigaChatAuthError
+from core.summarizer import fetch_gigachat_token, GigaChatAuthError, Summarizer
 
 
 def _response(status_code, json_body=None):
@@ -67,3 +67,54 @@ def test_success_returns_access_token(mock_post):
     mock_post.return_value = _response(200, {"access_token": "abc123"})
 
     assert fetch_gigachat_token("good-key") == "abc123"
+
+
+@patch("core.summarizer.requests.post")
+def test_400_raises_scope_mismatch_guidance(mock_post):
+    """A real user hit exactly this: 400 Bad Request, not 401 — the request
+    reached Sber's server and was structurally fine, but the scope
+    (GIGACHAT_API_PERS/B2B/CORP) didn't match their actual project type."""
+    mock_post.return_value = _response(400)
+
+    try:
+        fetch_gigachat_token("some-key", scope="GIGACHAT_API_PERS")
+        assert False, "expected GigaChatAuthError"
+    except GigaChatAuthError as e:
+        msg = str(e)
+        assert "400" in msg
+        assert "GIGACHAT_API_PERS" in msg
+        assert "тип аккаунта" in msg.lower()
+
+
+@patch("core.summarizer.requests.post")
+def test_scope_is_actually_sent_in_the_request_body(mock_post):
+    mock_post.return_value = _response(200, {"access_token": "tok"})
+
+    fetch_gigachat_token("some-key", scope="GIGACHAT_API_B2B")
+
+    _, kwargs = mock_post.call_args
+    assert kwargs["data"] == {"scope": "GIGACHAT_API_B2B"}
+
+
+@patch("core.summarizer.requests.post")
+def test_default_scope_is_personal(mock_post):
+    mock_post.return_value = _response(200, {"access_token": "tok"})
+
+    fetch_gigachat_token("some-key")
+
+    _, kwargs = mock_post.call_args
+    assert kwargs["data"] == {"scope": "GIGACHAT_API_PERS"}
+
+
+@patch("core.summarizer.requests.post")
+def test_summarizer_threads_its_configured_scope_through(mock_post):
+    mock_post.return_value = _response(200, {"access_token": "tok"})
+
+    s = Summarizer(
+        transcript="test", provider="gigachat", api_key="k",
+        model="GigaChat", gigachat_scope="GIGACHAT_API_CORP",
+    )
+    assert s._get_gigachat_token() == "tok"
+
+    _, kwargs = mock_post.call_args
+    assert kwargs["data"] == {"scope": "GIGACHAT_API_CORP"}

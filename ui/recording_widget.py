@@ -437,6 +437,7 @@ class RecordingWidget(QWidget):
             api_key=settings.get("ai_api_key", ""),
             model=settings.get("ai_model", ""),
             base_url=settings.get("ai_custom_url", ""),
+            gigachat_scope=settings.get("gigachat_scope", "GIGACHAT_API_PERS"),
         )
         self._summarizer.progress.connect(self._on_summary_progress)
         self._summarizer.finished.connect(self._on_summary_done)
