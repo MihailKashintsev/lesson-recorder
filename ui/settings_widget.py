@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QCheckBox, QStackedWidget,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QThread
-import json, sys, subprocess
+import json, sys, subprocess, shutil
 from pathlib import Path
 
 # ── Python-пакеты — описания и метаданные ────────────────────────────────────
@@ -349,6 +349,55 @@ class PipThread(QThread):
                 self.done.emit(self.pip_name, False, output)
         except Exception as e:
             self.done.emit(self.pip_name, False, str(e))
+
+
+class PythonInstallThread(QThread):
+    """Устанавливает Homebrew (если нужно) и Python на macOS в фоновом потоке.
+
+    Дублирует логику bootstrap.py::install_python_macos() вместо импорта её
+    оттуда — bootstrap.py не тянется PyInstaller-сборкой (нет причин класть
+    туда весь dev-скрипт первого запуска ради одной функции).
+    """
+    done = pyqtSignal(bool, str)   # (success, error_message)
+
+    REQUIRED_VERSION = "3.13"
+
+    def run(self):
+        brew = shutil.which("brew")
+        try:
+            if not brew:
+                install_cmd = (
+                    'NONINTERACTIVE=1 /bin/bash -c '
+                    '"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+                )
+                r = subprocess.run(
+                    install_cmd, shell=True,
+                    capture_output=True, text=True, timeout=600,
+                )
+                if r.returncode != 0:
+                    self.done.emit(False, f"Не удалось установить Homebrew:\n{r.stderr[-500:]}")
+                    return
+                for candidate in ("/opt/homebrew/bin/brew", "/usr/local/bin/brew"):
+                    if Path(candidate).exists():
+                        brew = candidate
+                        break
+                if not brew:
+                    self.done.emit(False, "Homebrew установлен, но не найден по стандартному пути.")
+                    return
+
+            r = subprocess.run(
+                [brew, "install", f"python@{self.REQUIRED_VERSION}"],
+                capture_output=True, text=True, timeout=600,
+            )
+            if r.returncode == 0:
+                self.done.emit(True, "")
+            else:
+                self.done.emit(False, f"Homebrew не смог установить Python:\n{r.stderr[-500:]}")
+        except subprocess.TimeoutExpired:
+            self.done.emit(False, "Установка заняла слишком много времени (таймаут).")
+        except Exception as e:
+            self.done.emit(False, str(e))
+
 
 from core.summarizer import PROVIDERS, get_provider_config
 from ui.theme import get_colors
@@ -732,7 +781,8 @@ class SettingsWidget(QWidget):
         layout.addWidget(ai_group)
 
         # ── Пакеты Python ─────────────────────────────────────────────────
-        layout.addWidget(self._build_packages_group(c))
+        self.packages_group = self._build_packages_group(c)
+        layout.addWidget(self.packages_group)
 
         # ── Сохранить ─────────────────────────────────────────────────────
         save_btn = QPushButton("💾  Сохранить настройки")
@@ -1037,9 +1087,17 @@ class SettingsWidget(QWidget):
             row1.addWidget(title_lbl, stretch=1)
             py_vbox.addLayout(row1)
 
+            is_mac = sys.platform == "darwin"
+
             desc_lbl = QLabel(
-                "Без Python невозможно устанавливать пакеты и запускать транскрипцию.<br>"
-                "Скачайте Python 3.10+ с официального сайта и установите его."
+                (
+                    "Без Python невозможно устанавливать пакеты и запускать транскрипцию.<br>"
+                    "Нажмите «Установить автоматически» — LessonRecorder сам поставит "
+                    "Homebrew (если нужно) и Python."
+                ) if is_mac else (
+                    "Без Python невозможно устанавливать пакеты и запускать транскрипцию.<br>"
+                    "Скачайте Python 3.10+ с официального сайта и установите его."
+                )
             )
             desc_lbl.setWordWrap(True)
             desc_lbl.setTextFormat(Qt.TextFormat.RichText)
@@ -1048,36 +1106,74 @@ class SettingsWidget(QWidget):
 
             btn_row = QHBoxLayout(); btn_row.setSpacing(8)
 
-            btn_py = QPushButton("🌐  Скачать Python (python.org)")
+            if is_mac:
+                self.btn_mac_auto_install = QPushButton("⚡  Установить автоматически")
+                self.btn_mac_auto_install.setFixedHeight(32)
+                self.btn_mac_auto_install.setCursor(Qt.CursorShape.PointingHandCursor)
+                self.btn_mac_auto_install.setStyleSheet(
+                    "QPushButton{background:#ffb300;color:#000;border:none;"
+                    "border-radius:7px;font-size:12px;font-weight:600;padding:0 16px;}"
+                    "QPushButton:hover{background:#ffc933;}"
+                    "QPushButton:disabled{background:#665500;color:#aaa;}"
+                )
+                self.btn_mac_auto_install.clicked.connect(self._on_mac_auto_install_clicked)
+                btn_row.addWidget(self.btn_mac_auto_install)
+
+                self.mac_install_status_lbl = QLabel("")
+                self.mac_install_status_lbl.setStyleSheet(
+                    f"color:{c['text_muted']}; font-size:11px;"
+                )
+                btn_row.addWidget(self.mac_install_status_lbl)
+
+            btn_py = QPushButton(
+                "🌐  Скачать вручную (python.org)" if is_mac
+                else "🌐  Скачать Python (python.org)"
+            )
             btn_py.setFixedHeight(32)
             btn_py.setCursor(Qt.CursorShape.PointingHandCursor)
             btn_py.setStyleSheet(
-                "QPushButton{background:#ffb300;color:#000;border:none;"
-                "border-radius:7px;font-size:12px;font-weight:600;padding:0 16px;}"
-                "QPushButton:hover{background:#ffc933;}"
+                (
+                    "QPushButton{background:transparent;color:#ffb300;"
+                    "border:1px solid #ffb30088;border-radius:7px;"
+                    "font-size:12px;padding:0 14px;}"
+                    "QPushButton:hover{background:#ffb30015;}"
+                ) if is_mac else (
+                    "QPushButton{background:#ffb300;color:#000;border:none;"
+                    "border-radius:7px;font-size:12px;font-weight:600;padding:0 16px;}"
+                    "QPushButton:hover{background:#ffc933;}"
+                )
             )
-            btn_py.clicked.connect(lambda: _wb.open("https://www.python.org/downloads/"))
+            btn_py.clicked.connect(lambda: _wb.open(
+                "https://www.python.org/downloads/macos/" if is_mac
+                else "https://www.python.org/downloads/"
+            ))
             btn_row.addWidget(btn_py)
 
-            btn_guide = QPushButton("📖  Инструкция")
-            btn_guide.setFixedHeight(32)
-            btn_guide.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn_guide.setStyleSheet(
-                f"QPushButton{{background:transparent;color:#ffb300;"
-                f"border:1px solid #ffb30088;border-radius:7px;"
-                f"font-size:12px;padding:0 14px;}}"
-                f"QPushButton:hover{{background:#ffb30015;}}"
-            )
-            btn_guide.clicked.connect(lambda: _wb.open(
-                "https://www.python.org/downloads/windows/"
-            ))
-            btn_row.addWidget(btn_guide)
+            if not is_mac:
+                btn_guide = QPushButton("📖  Инструкция")
+                btn_guide.setFixedHeight(32)
+                btn_guide.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn_guide.setStyleSheet(
+                    f"QPushButton{{background:transparent;color:#ffb300;"
+                    f"border:1px solid #ffb30088;border-radius:7px;"
+                    f"font-size:12px;padding:0 14px;}}"
+                    f"QPushButton:hover{{background:#ffb30015;}}"
+                )
+                btn_guide.clicked.connect(lambda: _wb.open(
+                    "https://www.python.org/downloads/windows/"
+                ))
+                btn_row.addWidget(btn_guide)
             btn_row.addStretch()
             py_vbox.addLayout(btn_row)
 
             hint_lbl = QLabel(
-                "💡 При установке обязательно отметьте <b>«Add Python to PATH»</b>, "
-                "затем перезапустите LessonRecorder."
+                (
+                    "💡 Установка через Homebrew при первом запуске может занять "
+                    "несколько минут и ~100–300 МБ (нужен интернет)."
+                ) if is_mac else (
+                    "💡 При установке обязательно отметьте <b>«Add Python to PATH»</b>, "
+                    "затем перезапустите LessonRecorder."
+                )
             )
             hint_lbl.setWordWrap(True)
             hint_lbl.setTextFormat(Qt.TextFormat.RichText)
@@ -1128,6 +1224,39 @@ class SettingsWidget(QWidget):
 
         self._fill_pkg_rows(c)
         return group
+
+    def _on_mac_auto_install_clicked(self):
+        reply = QMessageBox.question(
+            self, "Установить Python?",
+            "LessonRecorder установит Homebrew (если его ещё нет) и Python через него.\n\n"
+            "Это может занять несколько минут и потребует интернет-соединения.\n"
+            "Продолжить?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self.btn_mac_auto_install.setEnabled(False)
+        self.mac_install_status_lbl.setText("⏳ Устанавливаю Homebrew и Python…")
+        self._mac_install_thread = PythonInstallThread()
+        self._mac_install_thread.done.connect(self._on_mac_install_done)
+        self._mac_install_thread.start()
+
+    def _on_mac_install_done(self, success: bool, message: str):
+        if success:
+            QMessageBox.information(self, "Готово", "Python успешно установлен.")
+        else:
+            QMessageBox.critical(self, "Не удалось установить Python", message)
+        self._refresh_packages_group()
+
+    def _refresh_packages_group(self):
+        c = get_colors(self.settings.get("theme", "dark"))
+        new_group = self._build_packages_group(c)
+        layout = self.packages_group.parentWidget().layout()
+        idx = layout.indexOf(self.packages_group)
+        layout.removeWidget(self.packages_group)
+        self.packages_group.deleteLater()
+        layout.insertWidget(idx, new_group)
+        self.packages_group = new_group
 
     def _build_tesseract_row(self, c: dict) -> QWidget:
         """Строка Tesseract OCR — проверка через which/Homebrew/реестр."""
