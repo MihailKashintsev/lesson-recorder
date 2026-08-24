@@ -121,7 +121,7 @@ exe = EXE(
     disable_windowed_traceback=False,
     argv_emulation=IS_MAC,   # macOS: передача файлов через Finder
     target_arch=None,        # None = текущая арх. (arm64 или x86_64)
-    codesign_identity=None,
+    codesign_identity="-" if IS_MAC else None,  # ad-hoc — arm64 refuses to run unsigned binaries
     entitlements_file=None,
     icon=ICON,
     version="version_info.txt" if IS_WIN else None,

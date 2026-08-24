@@ -512,6 +512,18 @@ class UpdateDialog(QDialog):
                 with zipfile.ZipFile(file_path, "r") as z:
                     z.extractall(extract_dir)
                 folder = extract_dir
+
+                # Приложение не подписано сертификатом Apple Developer — macOS
+                # может отказаться его открывать ("повреждено") после переноса
+                # в Applications. Снимаем карантин сразу здесь, чтобы пользователю
+                # не пришлось делать это вручную в Терминале (см. README/диалог).
+                if sys.platform == "darwin":
+                    for name in os.listdir(extract_dir):
+                        if name.endswith(".app"):
+                            subprocess.run(
+                                ["xattr", "-cr", os.path.join(extract_dir, name)],
+                                check=False,
+                            )
             except Exception:
                 pass  # откроем папку с zip
 

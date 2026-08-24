@@ -62,6 +62,10 @@ jobs:
           pip install pyinstaller packaging
       - name: Build with PyInstaller
         run: pyinstaller LessonRecorder.spec --clean --noconfirm
+      - name: Ad-hoc code sign (required for arm64 to launch at all)
+        run: |
+          codesign --force --deep --sign - "dist/LessonRecorder.app"
+          codesign --verify --deep "dist/LessonRecorder.app"
       - name: Package as zip
         run: |
           ver="${{ github.ref_name }}"
@@ -93,6 +97,10 @@ jobs:
           pip install pyinstaller packaging
       - name: Build with PyInstaller
         run: pyinstaller LessonRecorder.spec --clean --noconfirm
+      - name: Ad-hoc code sign
+        run: |
+          codesign --force --deep --sign - "dist/LessonRecorder.app"
+          codesign --verify --deep "dist/LessonRecorder.app"
       - name: Package as zip
         run: |
           ver="${{ github.ref_name }}"
