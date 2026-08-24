@@ -24,8 +24,8 @@ LINKS = [
     {
         "icon":  "🌐",
         "label": "Сайт",
-        "sub":   "rendergames.tilda.ws",
-        "url":   "https://rendergames.tilda.ws/",
+        "sub":   "rendergames.ru",
+        "url":   "https://rendergames.ru/",
         "color": "#58a6ff",
     },
     {

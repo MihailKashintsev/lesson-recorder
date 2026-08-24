@@ -132,5 +132,5 @@ chmod +x LessonRecorder_*.AppImage
 ## Поддержка
 
 - Telegram: [@rendergm](https://t.me/rendergm)
-- Сайт: [rendergames.tilda.ws](https://rendergames.tilda.ws)
+- Сайт: [rendergames.ru](https://rendergames.ru)
 - Поддержать проект: [Boosty](https://boosty.to/rendergamesru)

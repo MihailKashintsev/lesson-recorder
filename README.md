@@ -132,5 +132,5 @@ No credit card required. Paste your key → **Test connection** → Save.
 ## Support
 
 - Telegram: [@rendergm](https://t.me/rendergm)
-- Website: [rendergames.tilda.ws](https://rendergames.tilda.ws)
+- Website: [rendergames.ru](https://rendergames.ru)
 - Support the project: [Boosty](https://boosty.to/rendergamesru)
