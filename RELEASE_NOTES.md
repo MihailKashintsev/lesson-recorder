@@ -1,5 +1,4 @@
-## What's new in v0.0.7
+## What's new in v0.0.8
 
-- **Fix:** the Windows installer had stopped actually installing Python — a previous change removed the install steps but left the wizard text promising an automatic download. Restored.
-- **macOS:** Python now installs automatically, both from `mac_setup.sh` and with a one-click "Установить автоматически" button right in the app's Settings screen (installs Homebrew first if it's missing, then Python through it).
-- Added engineering documentation and a small test suite.
+- **Fix (crash):** installing or checking a package in Settings could crash the app on exit from that action ("QThread: Destroyed while thread is still running"). A background thread's last reference was released a moment too early — fixed by waiting for it to actually finish first.
+- macOS crash reports will now show the real app version instead of a hardcoded "1.0.0".
