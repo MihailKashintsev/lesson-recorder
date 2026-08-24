@@ -111,7 +111,7 @@ class LinkCard(QWidget):
         # Стрелка
         arr = QLabel("→")
         arr.setStyleSheet(
-            f"font-size:16px; color:{c['text_dim']}; background:transparent;")
+            f"font-size:16px; color:{c['text_muted']}; background:transparent;")
         lay.addWidget(arr)
 
         self._set_bg(False)
@@ -363,7 +363,7 @@ class AboutWidget(QWidget):
         c   = get_colors(self._theme)
         lbl = QLabel(text.upper())
         lbl.setStyleSheet(
-            f"font-size:10px; font-weight:700; color:{c['text_dim']};"
+            f"font-size:10px; font-weight:700; color:{c['text_muted']};"
             "letter-spacing:1.2px; background:transparent; padding-left:2px;")
         return lbl
 

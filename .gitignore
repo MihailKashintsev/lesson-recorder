@@ -97,3 +97,6 @@ installer/Output/
 *.bak
 *.orig
 RELEASE_NOTES.md   # Генерируется перед релизом
+
+# ── Инструменты разработки (Claude Code) ────────────────────────────────
+.claude/

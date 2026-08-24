@@ -9,7 +9,7 @@ from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QFont, QColor
 
 import core.database as db
-from ui.theme import get_colors
+from ui.theme import get_colors, mono_font_stack
 
 
 def fmt_duration(seconds: int) -> str:
@@ -326,7 +326,7 @@ class HistoryWidget(QWidget):
                 background: {c['bg_panel']};
                 color: {c['text']};
                 border: none;
-                font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+                font-family: {mono_font_stack()};
                 font-size: 13px;
                 padding: 16px;
             }}

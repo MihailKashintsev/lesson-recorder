@@ -411,7 +411,7 @@ class PythonInstallThread(QThread):
 
 
 from core.summarizer import PROVIDERS, get_provider_config
-from ui.theme import get_colors
+from ui.theme import get_colors, mono_font_stack
 
 SETTINGS_PATH = Path.home() / ".lesson_recorder" / "settings.json"
 
@@ -1834,7 +1834,7 @@ class SettingsWidget(QWidget):
         log.setStyleSheet(
             f"QTextEdit{{background:#0d1117;color:#e6edf3;"
             f"border:1px solid {c['border']};border-radius:6px;"
-            f"font-family:Consolas,monospace;font-size:11px;padding:8px;}}")
+            f"font-family:{mono_font_stack()};font-size:11px;padding:8px;}}")
         lay.addWidget(log, stretch=1)
 
         from PyQt6.QtWidgets import QHBoxLayout

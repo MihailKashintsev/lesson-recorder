@@ -1,9 +1,31 @@
 """
 Управление темами приложения (тёмная / светлая).
 """
+import sys
 from typing import Literal
 
 ThemeMode = Literal["dark", "light"]
+
+
+def sans_font_stack() -> str:
+    """Системный шрифт платформы первым — раньше здесь везде стоял
+    Windows-стек ('Segoe UI' первым), и на macOS/Linux приложение никогда
+    не получало родной системный шрифт, а падало на generic sans-serif."""
+    if sys.platform == "darwin":
+        return "'.AppleSystemUIFont', '-apple-system', 'Helvetica Neue', sans-serif"
+    if sys.platform == "win32":
+        return "'Segoe UI', 'Inter', sans-serif"
+    return "'Ubuntu', 'Noto Sans', 'DejaVu Sans', sans-serif"
+
+
+def mono_font_stack() -> str:
+    """То же для моноширинного — Cascadia Code/Consolas не существуют на
+    macOS/Linux, а SF Mono/Menlo туда даже не входили в список."""
+    if sys.platform == "darwin":
+        return "'SF Mono', 'Menlo', 'Monaco', monospace"
+    if sys.platform == "win32":
+        return "'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace"
+    return "'JetBrains Mono', 'Fira Code', 'DejaVu Sans Mono', monospace"
 
 DARK = {
     "bg_main":       "#0d1117",
@@ -18,7 +40,7 @@ DARK = {
     "text":          "#e6edf3",
     "text_muted":    "#8b949e",
     "text_dim":      "#484f58",
-    "accent_blue":   "#58a6ff",
+    "accent_blue":   "#0A84FF",  # macOS system blue (dark)
     "accent_green":  "#3fb950",
     "accent_orange": "#d29922",
     "accent_red":    "#f85149",
@@ -51,9 +73,9 @@ LIGHT = {
     "border":        "#cbd5e1",
     "border_active": "#3b82f6",
     "text":          "#0f172a",
-    "text_muted":    "#64748b",
+    "text_muted":    "#5b6b80",  # было #64748b — 4.31:1 на bg_main, ниже минимума HIG 4.5:1
     "text_dim":      "#94a3b8",
-    "accent_blue":   "#2563eb",
+    "accent_blue":   "#0068D6",  # macOS system blue (light), deepened from #007AFF for 4.5:1 text contrast
     "accent_green":  "#16a34a",
     "accent_orange": "#d97706",
     "accent_red":    "#dc2626",
@@ -94,7 +116,7 @@ def build_app_stylesheet(mode: ThemeMode) -> str:
     QMainWindow, QWidget {{
         background: {c['bg_main']};
         color: {c['text']};
-        font-family: 'Segoe UI', 'Inter', 'SF Pro Display', sans-serif;
+        font-family: {sans_font_stack()};
         font-size: 13px;
     }}
     QLabel {{ color: {c['text']}; background: transparent; }}

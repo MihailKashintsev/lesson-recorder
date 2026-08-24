@@ -11,7 +11,7 @@ from core.recorder import Recorder, get_audio_path
 from core.transcriber import Transcriber
 from core.summarizer import Summarizer
 import core.database as db
-from ui.theme import get_colors
+from ui.theme import get_colors, mono_font_stack
 
 # ВАЖНО: PhotoOcrDialog импортируется ЛЕНИВО внутри метода _open_photo_ocr,
 # чтобы ошибки в photo_ocr/tesseract_langs НЕ ломали запись звука.
@@ -70,32 +70,32 @@ STATE_DONE        = "done"
 def _code_style_text(mode: str) -> str:
     """Возвращает QTextEdit stylesheet в стиле кодового редактора."""
     if mode == "dark":
-        return """
-            QTextEdit {
+        return f"""
+            QTextEdit {{
                 background: #0d1117;
                 color: #e6edf3;
                 border: 1px solid #30363d;
                 border-radius: 8px;
-                font-family: 'Cascadia Code', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+                font-family: {mono_font_stack()};
                 font-size: 13px;
                 padding: 12px;
                 line-height: 1.5;
                 selection-background-color: #1f4280;
-            }
+            }}
         """
     else:
-        return """
-            QTextEdit {
+        return f"""
+            QTextEdit {{
                 background: #f6f8fa;
                 color: #1f2328;
                 border: 1px solid #d0d7de;
                 border-radius: 8px;
-                font-family: 'Cascadia Code', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+                font-family: {mono_font_stack()};
                 font-size: 13px;
                 padding: 12px;
                 line-height: 1.5;
                 selection-background-color: #ddf4ff;
-            }
+            }}
         """
 
 
@@ -208,7 +208,7 @@ class RecordingWidget(QWidget):
         self.timer_label = QLabel("00:00:00")
         self.timer_label.setStyleSheet(f"""
             font-size: 32px;
-            font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+            font-family: {mono_font_stack()};
             font-weight: 300;
             color: {c['text']};
             background: transparent;
@@ -275,7 +275,7 @@ class RecordingWidget(QWidget):
         # ── Log / Transcript area ─────────────────────────────────────────
         log_header = QHBoxLayout()
         log_title = QLabel("// Лог транскрипции")
-        log_title.setStyleSheet(f"color: {c['comment']}; font-size: 12px; font-family: 'Cascadia Code', 'Consolas', monospace;")
+        log_title.setStyleSheet(f"color: {c['comment']}; font-size: 12px; font-family: {mono_font_stack()};")
         log_header.addWidget(log_title)
         log_header.addStretch()
 
