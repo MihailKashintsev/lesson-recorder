@@ -509,21 +509,55 @@ class UpdateDialog(QDialog):
                 extract_dir = os.path.join(folder, "LessonRecorder_update")
                 if os.path.exists(extract_dir):
                     _sh.rmtree(extract_dir)
-                with zipfile.ZipFile(file_path, "r") as z:
-                    z.extractall(extract_dir)
+                os.makedirs(extract_dir, exist_ok=True)
+
+                # ditto (macOS) сохраняет Unix-права, включая исполняемый бит —
+                # ровно то, что делает Finder/Archive Utility при обычной
+                # распаковке. zipfile.extractall() их НЕ восстанавливает, из-за
+                # чего бинарник внутри .app оставался без +x и падал с
+                # "Permission denied" при попытке запустить обновлённое
+                # приложение — реальный краш, с которым столкнулся пользователь.
+                used_ditto = False
+                if sys.platform == "darwin":
+                    try:
+                        r = subprocess.run(
+                            ["ditto", "-x", "-k", file_path, extract_dir],
+                            capture_output=True, text=True, timeout=120,
+                        )
+                        used_ditto = r.returncode == 0
+                    except Exception:
+                        used_ditto = False
+
+                if not used_ditto:
+                    with zipfile.ZipFile(file_path, "r") as z:
+                        z.extractall(extract_dir)
                 folder = extract_dir
 
-                # Приложение не подписано сертификатом Apple Developer — macOS
-                # может отказаться его открывать ("повреждено") после переноса
-                # в Applications. Снимаем карантин сразу здесь, чтобы пользователю
-                # не пришлось делать это вручную в Терминале (см. README/диалог).
                 if sys.platform == "darwin":
                     for name in os.listdir(extract_dir):
                         if name.endswith(".app"):
-                            subprocess.run(
-                                ["xattr", "-cr", os.path.join(extract_dir, name)],
-                                check=False,
-                            )
+                            app_path = os.path.join(extract_dir, name)
+
+                            # На случай если ditto недоступен и сработал
+                            # zipfile-фолбэк — принудительно возвращаем +x
+                            # главному бинарнику и остальным файлам внутри
+                            # Contents/MacOS.
+                            macos_dir = os.path.join(app_path, "Contents", "MacOS")
+                            if os.path.isdir(macos_dir):
+                                for exe_name in os.listdir(macos_dir):
+                                    try:
+                                        os.chmod(
+                                            os.path.join(macos_dir, exe_name), 0o755
+                                        )
+                                    except Exception:
+                                        pass
+
+                            # Приложение не подписано сертификатом Apple
+                            # Developer — macOS может отказаться его открывать
+                            # ("повреждено") после переноса в Applications.
+                            # Снимаем карантин сразу здесь, чтобы пользователю
+                            # не пришлось делать это вручную в Терминале.
+                            subprocess.run(["xattr", "-cr", app_path], check=False)
             except Exception:
                 pass  # откроем папку с zip
 
