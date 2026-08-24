@@ -122,6 +122,16 @@ def _find_tesseract_cmd_uncached() -> str | None:
     except Exception:
         pass
 
+    # 5. Стандартные пути Homebrew (macOS) — GUI-приложение, запущенное из
+    # Finder/Dock, не наследует PATH из .zshrc/.zprofile, поэтому шаги 2 и 4
+    # выше не видят tesseract, даже когда `brew install tesseract` реально
+    # его поставил и он прекрасно работает из Терминала.
+    if sys.platform == "darwin":
+        for p in ("/opt/homebrew/bin/tesseract",   # Apple Silicon
+                   "/usr/local/bin/tesseract"):     # Intel
+            if Path(p).exists():
+                return p
+
     # НЕ используем rglob — это сканирование всего диска (десятки секунд)
     return None
 

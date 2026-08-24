@@ -99,6 +99,7 @@ PACKAGES_INFO = [
         "used_for":    "🖥 Системный звук",
         "required":    False,
         "github_url":  "https://github.com/s0d3s/PyAudioWPatch",
+        "platforms":   ("win32",),  # нет колёс под macOS/Linux — не показываем и не ставим там
     },
     {
         "import_name": "cv2",
@@ -119,6 +120,16 @@ PACKAGES_INFO = [
         "github_url":  "https://github.com/google-gemini/generative-ai-python",
     },
 ]
+
+
+def _packages_for_current_platform() -> list[dict]:
+    """PACKAGES_INFO отфильтрован по sys.platform — пакет без "platforms"
+    считается кроссплатформенным, с "platforms" показывается и ставится
+    только там (см. PyAudioWPatch, только Windows)."""
+    return [
+        p for p in PACKAGES_INFO
+        if "platforms" not in p or sys.platform in p["platforms"]
+    ]
 
 
 def _run_pip_show(pip_name: str) -> dict | None:
@@ -1470,7 +1481,7 @@ class SettingsWidget(QWidget):
         self._pkg_rows.clear()
 
         # Сначала рисуем все строки с "🔍 проверяю…"
-        for pkg in PACKAGES_INFO:
+        for pkg in _packages_for_current_platform():
             row_w = self._build_pkg_row(pkg, c, checking=True)
             self._pkg_vbox.addWidget(row_w)
 
@@ -1480,7 +1491,7 @@ class SettingsWidget(QWidget):
     def _start_pkg_check(self):
         """Запускает PkgCheckThread для всех пакетов параллельно."""
         _pip_show_cache.clear()
-        t = PkgCheckThread([p["pip_name"] for p in PACKAGES_INFO])
+        t = PkgCheckThread([p["pip_name"] for p in _packages_for_current_platform()])
         t.pkg_checked.connect(self._on_pkg_checked)
         t.start()
         self._pkg_check_thread = t  # сохраняем чтобы не был GC-собран
@@ -1690,7 +1701,7 @@ class SettingsWidget(QWidget):
             os.system(f'xdg-open "{p}"')
 
     def _install_missing(self):
-        for pkg in PACKAGES_INFO:
+        for pkg in _packages_for_current_platform():
             if not _is_package_installed(pkg["pip_name"], pkg["import_name"]):
                 self._install_by_name(pkg["pip_name"])
 

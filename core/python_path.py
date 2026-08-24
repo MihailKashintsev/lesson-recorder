@@ -16,13 +16,40 @@ import os
 import shutil
 from pathlib import Path
 
+MIN_PYTHON = (3, 10)
+
+
+def _version_at_least(python_path: str, minimum: tuple[int, int]) -> bool:
+    """Реально запускает python_path и проверяет sys.version_info — не полагаемся
+    на то, что «python3» на PATH обязательно достаточно свежий (на macOS это
+    сплошь и рядом древний Python 3.9 из Xcode Command Line Tools)."""
+    try:
+        import subprocess
+        flags = 0
+        if sys.platform == "win32":
+            try: flags = subprocess.CREATE_NO_WINDOW
+            except AttributeError: pass
+        r = subprocess.run(
+            [python_path, "-c",
+             "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+            capture_output=True, text=True, timeout=5, creationflags=flags,
+        )
+        major, minor = (int(x) for x in r.stdout.strip().split("."))
+        return (major, minor) >= minimum
+    except Exception:
+        return False
+
 
 def _check_exe(path: str | Path) -> str | None:
-    """Проверяет что путь существует и это исполняемый файл Python."""
+    """Проверяет что путь существует, это исполняемый файл, и версия Python
+    не старше MIN_PYTHON (иначе pip install молча предлагает пакеты, которых
+    для такой версии просто нет на PyPI)."""
     p = Path(path)
-    if p.exists() and p.suffix.lower() in (".exe", ""):
-        return str(p)
-    return None
+    if not p.exists() or p.suffix.lower() not in (".exe", ""):
+        return None
+    if not _version_at_least(str(p), MIN_PYTHON):
+        return None
+    return str(p)
 
 
 def find_python_exe() -> str:
@@ -51,7 +78,9 @@ def find_python_exe() -> str:
         if found_path:
             resolved = Path(found_path).resolve()
             if resolved != self_exe:
-                return str(found_path)
+                checked = _check_exe(found_path)
+                if checked:
+                    return checked
 
     # ── 2b. Стандартные папки macOS (Homebrew, python.org) ────────────────────
     if sys.platform == "darwin":
